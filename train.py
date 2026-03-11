@@ -83,8 +83,8 @@ def main():
     # OPTIMIZED MULTI-CORE CONFIGURATION
     import multiprocessing
     cpus = multiprocessing.cpu_count()
-    num_envs = cpus 
-    num_steps = 1024 # Longer steps to saturate the GPU with larger batches per update
+    num_envs = 6 # Strictly match hardware cores for PufferLib optimization
+    num_steps = 2048 # Increase steps even further to keep the GPU busy with only 6 envs
     total_timesteps = 100_000_000 
     learning_rate = 1e-3 
     ent_coef = 0.01 
