@@ -92,6 +92,7 @@ def main():
     parser.add_argument("--run-name", type=str, default=None, help="The name of the run (for TensorBoard)")
     parser.add_argument("--total-timesteps", type=int, default=1_000_000_000, help="Total timesteps (default: 1B for 'forever')")
     parser.add_argument("--no-tensorboard", action="store_true", help="Don't launch tensorboard")
+    parser.add_argument("--start-update", type=int, default=None, help="Manually set the starting update number")
     args = parser.parse_args()
 
     # PPO CONFIGURATION
@@ -133,12 +134,34 @@ def main():
                 print(f"Loaded checkpoint: {args.checkpoint} (Resuming from update {start_update})")
             else:
                 agent.load_state_dict(checkpoint)
-                print(f"Loaded checkpoint: {args.checkpoint} (Legacy format)")
+                # Try to guess update from filename: e.g. update_150.pt
+                import re
+                match = re.search(r"update_(\d+)", os.path.basename(args.checkpoint))
+                if match:
+                    start_update = int(match.group(1)) + 1
+                    global_step = (start_update - 1) * batch_size
+                    print(f"Loaded checkpoint: {args.checkpoint} (Legacy format, guessed update {start_update})")
+                else:
+                    print(f"Loaded checkpoint: {args.checkpoint} (Legacy format)")
         else:
             print(f"Error: Checkpoint {args.checkpoint} not found.")
             return
 
+    # Manually override if provided
+    if args.start_update is not None:
+        start_update = args.start_update
+        global_step = (start_update - 1) * batch_size
+        print(f"Manually overriding starting update to {start_update}")
+
     optimizer = optim.Adam(agent.parameters(), lr=learning_rate, eps=1e-5)
+    
+    # Restore optimizer state if it exists in the checkpoint
+    if args.checkpoint and os.path.exists(args.checkpoint):
+        # We already loaded the file once, but need the dict for optimizer too
+        checkpoint = torch.load(args.checkpoint, map_location=device)
+        if isinstance(checkpoint, dict) and "optimizer_state_dict" in checkpoint:
+            optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
+            print(f"Loaded optimizer state from {args.checkpoint}")
     
     # Use existing run_name if provided to continue TensorBoard logs
     run_name = args.run_name if args.run_name else f"PPO_MARATHON_{int(time.time())}"
