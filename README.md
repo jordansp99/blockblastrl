@@ -1,21 +1,21 @@
 # BlockBlast RL Lab
 
-A high-performance Reinforcement Learning laboratory for solving the game BlockBlast. This project uses a hybrid architecture with a fast C game engine and a Python-based RL trainer.
+A high-performance Reinforcement Learning laboratory for solving the game BlockBlast. This project uses a hybrid architecture with a fast C game engine and a Python-based RL trainer, capable of reaching **18,000+ Steps Per Second (SPS)** on consumer hardware.
 
 ## Technical Stack
 
 - **Game Engine:** Pure C (`blockblast_lib.c`) for maximum execution speed.
 - **RL Framework:** [PufferLib](https://github.com/PufferAI/PufferLib) for high-speed vectorization and "zero-copy" data transfer.
-- **Deep Learning:** PyTorch with CNN architecture for spatial pattern recognition.
-- **Optimization:** [Optuna](https://optuna.org/) for automated Bayesian hyperparameter sweeps and pruning.
-- **Acceleration:** Support for Apple Metal (MPS) and NVIDIA (CUDA) GPUs.
-- **GUI:** Raylib for real-time visualization of the AI's gameplay.
+- **Deep Learning:** PyTorch with a custom **Global View CNN** architecture (Spatial + Line-detector kernels).
+- **Acceleration:** Native support for **NVIDIA (CUDA)** and **Apple Silicon (MPS)** GPUs.
+- **Optimization:** Strategic Reward Shaping (Snugness, Hole Penalties, and Squared Line Bonuses).
 
 ## Installation
 
 ### 1. Prerequisites
 - **macOS:** `brew install raylib`
-- **Linux (NVIDIA):** `sudo apt install libraylib-dev` (or build from source)
+- **Linux (NVIDIA):** `sudo apt install libraylib-dev`
+- **Windows:** Install [Raylib](https://www.raylib.com/) and ensure `gcc` is in your PATH.
 
 ### 2. Setup Environment
 ```bash
@@ -26,13 +26,14 @@ pip install -r requirements.txt
 
 ### 3. Compile C Library
 ```bash
+# Detects OS and builds .dylib, .so, or .dll
 make
 ```
 
 ## How to Use
 
-### Training (Hyperparameter Sweep)
-Start the automated Optuna sweep to find the best policy:
+### Training (Multi-GPU/CPU Agnostic)
+Start the high-speed marathon training. The script automatically detects and utilizes **CUDA** or **MPS** if available:
 ```bash
 python train.py
 ```
@@ -44,11 +45,11 @@ tensorboard --logdir=runs
 ### Watching the AI Play
 Load a saved checkpoint and watch the AI in slow-motion (1 second per move):
 ```bash
-python play.py checkpoints/Trial_X_.../iter_976.pt cnn
+python play.py checkpoints/STRATEGIC_MARATHON_.../iter_X.pt
 ```
 
-## Architecture Details
+## Performance & Architecture
 
-- **Action Masking:** The AI is physically prevented from making invalid moves by the C engine, forcing 100% of training time to be spent on strategy.
-- **Spatial Intelligence:** The CNN treats the 8x8 board as an image, allowing it to recognize rows, columns, and shape fitment patterns.
-- **Persistent Studies:** Hyperparameter results are stored in `optuna_study.db` (SQLite), allowing the sweep to continue across restarts.
+- **CUDA Optimization:** The PufferLib backend is optimized for batch processing, allowing NVIDIA GPUs to train on 128+ parallel games simultaneously without CPU bottlenecks.
+- **Action Masking:** The AI is physically prevented from making invalid moves by the C engine, ensuring 100% of training data is spent on high-level strategy.
+- **Global View Brain:** The CNN uses specialized 1x8 and 8x1 kernels to "see" entire rows and columns, mimicking human spatial reasoning.
