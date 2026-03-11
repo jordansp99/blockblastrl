@@ -83,8 +83,8 @@ def main():
     # OPTIMIZED MULTI-CORE CONFIGURATION
     import multiprocessing
     cpus = multiprocessing.cpu_count()
-    num_envs = cpus * 32 # Scale based on CPU cores
-    num_steps = 256 # Shorter steps for more frequent updates
+    num_envs = cpus 
+    num_steps = 1024 # Longer steps to saturate the GPU with larger batches per update
     total_timesteps = 100_000_000 
     learning_rate = 1e-3 
     ent_coef = 0.01 
