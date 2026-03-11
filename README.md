@@ -14,8 +14,7 @@ A high-performance Reinforcement Learning laboratory for solving the game BlockB
 
 ### 1. Prerequisites
 - **macOS:** `brew install raylib`
-- **Linux (NVIDIA):** `sudo apt install libraylib-dev`
-- **Windows:** Install [Raylib](https://www.raylib.com/) and ensure `gcc` is in your PATH.
+- **Linux:** `sudo apt install libraylib-dev`
 
 ### 2. Setup Environment
 ```bash
@@ -26,7 +25,7 @@ pip install -r requirements.txt
 
 ### 3. Compile C Library
 ```bash
-# Detects OS and builds .dylib, .so, or .dll
+# Detects OS (macOS/Linux) and builds .dylib or .so
 make
 ```
 
