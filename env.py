@@ -44,14 +44,16 @@ class BlockBlastEnv(gymnasium.Env):
         })
         self.action_space = spaces.Discrete(192)
 
+        # Pre-allocate buffers for observation and mask
+        self._obs_buffer = (c_int * 139)()
+        self._mask_buffer = (c_int * 192)()
+
     def _get_obs(self):
-        obs_array = (c_int * 139)()
-        self.lib.get_observation(self.state_ptr, obs_array)
-        obs_np = np.array(obs_array, dtype=np.int32)
+        self.lib.get_observation(self.state_ptr, self._obs_buffer)
+        obs_np = np.frombuffer(self._obs_buffer, dtype=np.int32).copy()
         
-        mask_array = (c_int * 192)()
-        self.lib.get_action_mask(self.state_ptr, mask_array)
-        mask_np = np.array(mask_array, dtype=np.int8)
+        self.lib.get_action_mask(self.state_ptr, self._mask_buffer)
+        mask_np = np.frombuffer(self._mask_buffer, dtype=np.int32).astype(np.int8).copy()
 
         # Ensure at least one valid action to prevent crashing
         if mask_np.sum() == 0:
