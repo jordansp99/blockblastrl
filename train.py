@@ -41,9 +41,9 @@ class ChampionAgent(nn.Module):
             nn.Flatten()
         )
         
-        # Combined features
+        # Combined features (4096 + 32 + 128 + 128 + 75 = 4459)
         self.fc = nn.Sequential(
-            nn.Linear(4096 + 32 + 128 + 128 + 75, 512),
+            nn.Linear(4459, 512),
             nn.ReLU(),
             nn.Linear(512, 512),
             nn.ReLU(),
@@ -63,6 +63,9 @@ class ChampionAgent(nn.Module):
         combined = torch.cat([l_feat, g_feat, r_feat, c_feat, shapes], dim=1)
         return self.fc(combined)
 
+    def get_value(self, x):
+        return self.critic(self._get_hidden(x))
+
     def get_action_and_value(self, x, action=None, mask=None):
         hidden = self._get_hidden(x)
         logits = self.actor(hidden)
@@ -80,52 +83,70 @@ def make_env(**kwargs):
     )
 
 def main():
-    # OPTIMIZED MULTI-CORE CONFIGURATION
-    import multiprocessing
-    cpus = multiprocessing.cpu_count()
-    num_envs = 6 # Strictly match hardware cores for PufferLib optimization
-    num_steps = 2048 # Increase steps even further to keep the GPU busy with only 6 envs
-    total_timesteps = 100_000_000 
-    learning_rate = 1e-3 
-    ent_coef = 0.01 
-    gamma = 0.999
+    # PPO CONFIGURATION
+    num_envs = 128 
+    num_steps = 256 
+    total_timesteps = 50_000_000 
+    learning_rate = 3e-4 # More stable for PPO
+    anneal_lr = True
+    gamma = 0.99
+    gae_lambda = 0.95
+    num_minibatches = 4
+    update_epochs = 4
+    norm_adv = True
+    clip_coef = 0.2
+    ent_coef = 0.01
+    vf_coef = 0.5
+    max_grad_norm = 0.5
     
-    device = torch.device("cuda" if torch.cuda.is_available() else "mps" if torch.backends.mps.is_available() else "cpu")
-    print(f"Starting Optimized Marathon on {device} with {num_envs} envs across {cpus} cores...")
+    batch_size = int(num_envs * num_steps)
+    minibatch_size = int(batch_size // num_minibatches)
     
-    envs = pufferlib.vector.make(make_env, num_envs=num_envs, backend=pufferlib.vector.Multiprocessing)
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    print(f"Starting PPO training on {device}...")
+    
+    envs = pufferlib.vector.make(make_env, num_envs=num_envs, backend=pufferlib.vector.Serial)
     agent = ChampionAgent().to(device)
     optimizer = optim.Adam(agent.parameters(), lr=learning_rate, eps=1e-5)
     
-    run_name = f"STRATEGIC_MARATHON_{int(time.time())}"
+    run_name = f"PPO_MARATHON_{int(time.time())}"
     writer = SummaryWriter(f"runs/{run_name}")
     
     obs_size, mask_size = 139, 192
     obs_shape = envs.single_observation_space.shape
     
+    # Buffers
     obs_buffer = torch.zeros((num_steps, num_envs) + obs_shape).to(device)
     actions_buffer = torch.zeros((num_steps, num_envs) + envs.single_action_space.shape).to(device)
     logprobs_buffer = torch.zeros((num_steps, num_envs)).to(device)
     rewards_buffer = torch.zeros((num_steps, num_envs)).to(device)
+    dones_buffer = torch.zeros((num_steps, num_envs)).to(device)
     values_buffer = torch.zeros((num_steps, num_envs)).to(device)
-    masks_buffer = torch.zeros((num_steps, num_envs, mask_size)).to(device)
     
     next_obs, _ = envs.reset()
     next_obs = torch.Tensor(next_obs).to(device)
+    next_done = torch.zeros(num_envs).to(device)
     
     global_step = 0
+    total_episodes = 0
     start_time = time.time()
-    num_iterations = total_timesteps // (num_envs * num_steps)
+    num_updates = total_timesteps // batch_size
     
-    for iteration in range(1, num_iterations + 1):
+    for update in range(1, num_updates + 1):
+        # Annealing the rate if instructed to do so.
+        if anneal_lr:
+            frac = 1.0 - (update - 1.0) / num_updates
+            lrnow = frac * learning_rate
+            optimizer.param_groups[0]["lr"] = lrnow
+
         for step in range(0, num_steps):
             global_step += num_envs
             obs_buffer[step] = next_obs
+            dones_buffer[step] = next_done
             
-            # Alphabetical Slicing
+            # Alphabetical Slicing: [mask (192), obs (139)]
             current_mask = next_obs[:, :mask_size]
             current_obs = next_obs[:, mask_size : mask_size + obs_size]
-            masks_buffer[step] = current_mask
 
             with torch.no_grad():
                 action, logprob, _, value = agent.get_action_and_value(current_obs, mask=current_mask)
@@ -134,46 +155,108 @@ def main():
             actions_buffer[step] = action
             logprobs_buffer[step] = logprob
             
-            next_obs, reward, _, _, _ = envs.step(action.cpu().numpy())
+            next_obs, reward, terminated, truncated, _ = envs.step(action.cpu().numpy())
+            next_done = torch.logical_or(torch.Tensor(terminated), torch.Tensor(truncated)).to(device)
+            total_episodes += int(next_done.sum().item())
             next_obs = torch.Tensor(next_obs).to(device)
             rewards_buffer[step] = torch.tensor(reward).to(device)
 
-        # Optimization Step
+        # bootstrap value if not done
+        with torch.no_grad():
+            next_obs_actual = next_obs[:, mask_size : mask_size + obs_size]
+            next_value = agent.get_value(next_obs_actual).reshape(1, -1)
+            advantages = torch.zeros_like(rewards_buffer).to(device)
+            lastgaelam = 0
+            for t in reversed(range(num_steps)):
+                if t == num_steps - 1:
+                    nextnonterminal = 1.0 - next_done.float()
+                    nextvalues = next_value
+                else:
+                    nextnonterminal = 1.0 - dones_buffer[t + 1]
+                    nextvalues = values_buffer[t + 1]
+                delta = rewards_buffer[t] + gamma * nextvalues * nextnonterminal - values_buffer[t]
+                advantages[t] = lastgaelam = delta + gamma * gae_lambda * nextnonterminal * lastgaelam
+            returns = advantages + values_buffer
+
+        # flatten the batch
         b_obs = obs_buffer.reshape((-1,) + obs_shape)
         b_logprobs = logprobs_buffer.reshape(-1)
         b_actions = actions_buffer.reshape((-1,) + envs.single_action_space.shape)
-        b_returns = rewards_buffer.reshape(-1)
+        b_advantages = advantages.reshape(-1)
+        b_returns = returns.reshape(-1)
         b_values = values_buffer.reshape(-1)
-        b_masks = masks_buffer.reshape((-1, mask_size))
         
         b_current_obs = b_obs[:, mask_size : mask_size + obs_size]
         b_current_mask = b_obs[:, :mask_size]
-        
-        _, newlogprob, entropy, newvalue = agent.get_action_and_value(b_current_obs, b_actions.long(), mask=b_current_mask)
-        
-        pg_loss = -newlogprob.mean()
-        v_loss = ((newvalue.view(-1) - b_returns) ** 2).mean() * 0.5
-        ent_loss = entropy.mean()
-        loss = pg_loss + v_loss - ent_coef * ent_loss
-        
-        optimizer.zero_grad()
-        loss.backward()
-        optimizer.step()
-        
+
+        # Optimizing the policy and value network
+        b_inds = np.arange(batch_size)
+        clipfracs = []
+        for epoch in range(update_epochs):
+            np.random.shuffle(b_inds)
+            for start in range(0, batch_size, minibatch_size):
+                end = start + minibatch_size
+                mb_inds = b_inds[start:end]
+
+                _, newlogprob, entropy, newvalue = agent.get_action_and_value(
+                    b_current_obs[mb_inds], 
+                    b_actions.long()[mb_inds], 
+                    mask=b_current_mask[mb_inds]
+                )
+                logratio = newlogprob - b_logprobs[mb_inds]
+                ratio = logratio.exp()
+
+                with torch.no_grad():
+                    # calculate approx_kl http://joschu.net/blog/kl-approx.html
+                    old_approx_kl = (-logratio).mean()
+                    approx_kl = ((ratio - 1) - logratio).mean()
+                    clipfracs += [((ratio - 1.0).abs() > clip_coef).float().mean().item()]
+
+                mb_advantages = b_advantages[mb_inds]
+                if norm_adv:
+                    mb_advantages = (mb_advantages - mb_advantages.mean()) / (mb_advantages.std() + 1e-8)
+
+                # Policy loss
+                pg_loss1 = -mb_advantages * ratio
+                pg_loss2 = -mb_advantages * torch.clamp(ratio, 1 - clip_coef, 1 + clip_coef)
+                pg_loss = torch.max(pg_loss1, pg_loss2).mean()
+
+                # Value loss
+                newvalue = newvalue.view(-1)
+                v_loss = 0.5 * ((newvalue - b_returns[mb_inds]) ** 2).mean()
+
+                entropy_loss = entropy.mean()
+                loss = pg_loss - ent_coef * entropy_loss + v_loss * vf_coef
+
+                optimizer.zero_grad()
+                loss.backward()
+                nn.utils.clip_grad_norm_(agent.parameters(), max_grad_norm)
+                optimizer.step()
+
+        y_pred, y_true = b_values.cpu().numpy(), b_returns.cpu().numpy()
+        var_y = np.var(y_true)
+        explained_var = np.nan if var_y == 0 else 1 - np.var(y_true - y_pred) / var_y
+
         # Logging
+        current_time = time.time() - start_time
+        sps = int(global_step / current_time)
+        eps = int(total_episodes / current_time)
         avg_reward = float(rewards_buffer.mean().item())
-        sps = float(global_step / (time.time() - start_time))
-        writer.add_scalar("charts/avg_reward", avg_reward, iteration)
-        writer.add_scalar("charts/SPS", sps, iteration)
-        writer.add_scalar("losses/policy_loss", float(pg_loss.item()), iteration)
-        writer.add_scalar("losses/value_loss", float(v_loss.item()), iteration)
-        writer.add_scalar("losses/entropy", float(ent_loss.item()), iteration)
+        print(f"Update {update} | SPS: {sps} | EPS: {eps} | Reward: {avg_reward:.2f} | Var: {explained_var:.2f}")
         
-        if iteration % 100 == 0 or iteration == num_iterations:
-            checkpoint_path = f"checkpoints/{run_name}/iter_{iteration}.pt"
+        writer.add_scalar("charts/learning_rate", optimizer.param_groups[0]["lr"], global_step)
+        writer.add_scalar("losses/value_loss", v_loss.item(), global_step)
+        writer.add_scalar("losses/policy_loss", pg_loss.item(), global_step)
+        writer.add_scalar("losses/entropy", entropy_loss.item(), global_step)
+        writer.add_scalar("losses/approx_kl", approx_kl.item(), global_step)
+        writer.add_scalar("charts/SPS", sps, global_step)
+        writer.add_scalar("charts/EPS", eps, global_step)
+        writer.add_scalar("charts/avg_reward", avg_reward, global_step)
+
+        if update == 1 or update % 50 == 0:
+            checkpoint_path = f"checkpoints/{run_name}/update_{update}.pt"
             os.makedirs(os.path.dirname(checkpoint_path), exist_ok=True)
             torch.save(agent.state_dict(), checkpoint_path)
-            print(f"Iter {iteration}/{num_iterations} | Reward: {avg_reward:.2f} | SPS: {sps}")
 
     envs.close()
     writer.close()
