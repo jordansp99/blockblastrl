@@ -244,12 +244,9 @@ void step_game(GameState* state, int action, float* reward, bool* done) {
     state->shape_active[shape_idx] = false;
     int lines_cleared = clear_lines(state);
     
-    // SIMPLIFIED STRATEGIC REWARD
-    float base_reward = (float)blocks_placed;
-    float line_reward = (float)(lines_cleared * 100);
-    float safety_bonus = has_3x3_gap(state) ? 10.0f : -20.0f; 
-
-    *reward = base_reward + line_reward + safety_bonus;
+    // EXTREMELY SIMPLIFIED REWARD: Only line clears
+    // 1 line: 100, 2 lines: 400, 3 lines: 900, 4 lines: 1600
+    *reward = (float)(lines_cleared * lines_cleared * 100);
     
     state->score += (int)*reward;
 
