@@ -1,4 +1,6 @@
 import torch
+import warnings
+warnings.filterwarnings("ignore", category=UserWarning, module="gym")
 import torch.nn as nn
 from torch.distributions.categorical import Categorical
 import numpy as np

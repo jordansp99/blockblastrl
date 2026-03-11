@@ -1,4 +1,6 @@
 import os
+import warnings
+warnings.filterwarnings("ignore", category=UserWarning, module="gym")
 import time
 import torch
 import torch.nn as nn
