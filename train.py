@@ -86,7 +86,7 @@ def main():
     ent_coef = 0.01 # Focus on exploitation
     gamma = 0.999
     
-    device = torch.device("mps" if torch.backends.mps.is_available() else "cpu")
+    device = torch.device("cuda" if torch.cuda.is_available() else "mps" if torch.backends.mps.is_available() else "cpu")
     print(f"Starting Strategic Marathon on {device}...")
     
     envs = pufferlib.vector.make(make_env, num_envs=num_envs, backend=pufferlib.vector.Serial)

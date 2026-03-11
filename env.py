@@ -1,10 +1,10 @@
-import gymnasium as gym
+import gymnasium
 import numpy as np
 from gymnasium import spaces
 from ctypes import *
 import os
 
-class BlockBlastEnv(gym.Env):
+class BlockBlastEnv(gymnasium.Env):
     metadata = {"render_modes": ["human"]}
 
     def __init__(self, render_mode=None):
@@ -83,4 +83,4 @@ class BlockBlastEnv(gym.Env):
         self.lib.close_render()
         self.lib.free_game(self.state_ptr)
 
-gym.register("BlockBlast-v0", entry_point=BlockBlastEnv)
+gymnasium.register("BlockBlast-v0", entry_point=BlockBlastEnv)

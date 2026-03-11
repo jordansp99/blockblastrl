@@ -14,6 +14,8 @@ else
         LDFLAGS += -L/opt/homebrew/lib
     else
         TARGET = libblockblast.so
+        CFLAGS += -I./include
+        LDFLAGS += -L./lib -Wl,-rpath,./lib
     endif
 endif
 

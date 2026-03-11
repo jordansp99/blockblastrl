@@ -92,11 +92,11 @@ def main():
     obs_size = 139
     action_size = 192
     
-    # Detect device (MPS, CUDA, or CPU)
-    if torch.backends.mps.is_available():
-        device = torch.device("mps")
-    elif torch.cuda.is_available():
+    # Detect device (CUDA, MPS, or CPU)
+    if torch.cuda.is_available():
         device = torch.device("cuda")
+    elif torch.backends.mps.is_available():
+        device = torch.device("mps")
     else:
         device = torch.device("cpu")
         

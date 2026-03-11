@@ -5,6 +5,7 @@
 #include <stdio.h>
 #include <math.h>
 #include "raylib.h"
+#include "colors.h"
 
 #define BOARD_SIZE 8
 #define MAX_SHAPE_SIZE 5
