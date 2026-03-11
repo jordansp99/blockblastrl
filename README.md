@@ -32,20 +32,39 @@ make
 ## How to Use
 
 ### Training (Multi-GPU/CPU Agnostic)
-Start the high-speed marathon training. The script automatically detects and utilizes **CUDA** or **MPS** if available:
+Start high-speed marathon training. The script automatically detects and utilizes **CUDA** or **MPS** if available:
 ```bash
-python train.py
+python train.py [ARGS]
 ```
-Monitor the progress in real-time via TensorBoard:
+
+**Common Arguments:**
+- `--checkpoint PATH`: Load a saved checkpoint to resume training.
+- `--run-name NAME`: Specify the run name for TensorBoard logs and checkpoint folder.
+- `--start-update N`: Manually set the starting update number (useful for resetting legacy checkpoints to update 1).
+- `--total-timesteps N`: Total training steps (default: 1,000,000,000).
+- `--no-tensorboard`: Disable automatic TensorBoard launching.
+
+**Example (Resuming a run):**
+```bash
+python train.py --checkpoint checkpoints/MY_RUN/update_150.pt --run-name MY_RUN
+```
+
+Monitor progress in real-time via TensorBoard (automatically launched by `train.py`):
 ```bash
 tensorboard --logdir=runs
 ```
 
 ### Watching the AI Play
-Load a saved checkpoint and watch the AI in slow-motion (1 second per move):
+Load a saved checkpoint and watch the AI play in a slow-motion GUI:
 ```bash
-python play.py checkpoints/STRATEGIC_MARATHON_.../iter_X.pt
+python play.py [CHECKPOINT_PATH] [SEED]
 ```
+
+**Example:**
+```bash
+python play.py checkpoints/MY_RUN/update_150.pt 42
+```
+*Specifying a seed allows you to replay the same block sequence.*
 
 ## Performance & Architecture
 
