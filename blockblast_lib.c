@@ -45,28 +45,39 @@ typedef struct {
     bool shape_active[3];
     int score;
     bool game_over;
+    unsigned int rng_state;
 } GameState;
+
+// Simple, fast Xorshift PRNG for per-state randomness
+unsigned int local_rand(GameState* state) {
+    state->rng_state ^= state->rng_state << 13;
+    state->rng_state ^= state->rng_state >> 17;
+    state->rng_state ^= state->rng_state << 5;
+    return state->rng_state;
+}
 
 void generate_shapes(GameState* state) {
     for (int i = 0; i < 3; i++) {
-        state->current_shapes[i] = rand() % NUM_SHAPES;
+        state->current_shapes[i] = local_rand(state) % NUM_SHAPES;
         state->shape_active[i] = true;
     }
 }
 
-void seed_game(int seed) {
+void seed_game(GameState* state, int seed) {
     if (seed == -1) {
         static int call_count = 0;
-        srand(time(NULL) + (call_count++ * 1337));
+        state->rng_state = (unsigned int)time(NULL) + (call_count++ * 1337);
     } else {
-        srand(seed);
+        state->rng_state = (unsigned int)seed;
     }
+    // Warm up the RNG
+    for (int i = 0; i < 10; i++) local_rand(state);
 }
 
 GameState* init_game(int seed) {
-    seed_game(seed);
     GameState* state = (GameState*)malloc(sizeof(GameState));
     memset(state, 0, sizeof(GameState));
+    seed_game(state, seed);
     for (int i=0; i<8; i++)
         for (int j=0; j<8; j++)
             state->board_colors[i][j] = -1;
