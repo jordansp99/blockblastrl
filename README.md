@@ -57,8 +57,12 @@ tensorboard --logdir=runs
 ### Watching the AI Play
 Load a saved checkpoint and watch the AI play in a slow-motion GUI:
 ```bash
-python play.py [CHECKPOINT_PATH] [SEED]
+python play.py [CHECKPOINT_PATH] [SEED] [--stochastic]
 ```
+
+**Common Arguments:**
+- `SEED`: Optional integer to fix the block sequence.
+- `--stochastic`: By default, the AI plays **deterministically** (choosing the absolute best move). Use this flag to enable probabilistic sampling (how the AI behaves during training).
 
 **Example:**
 ```bash

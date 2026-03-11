@@ -62,7 +62,7 @@ class Agent(nn.Module):
         combined = torch.cat([l_feat, g_feat, r_feat, c_feat, shapes], dim=1)
         return self.fc(combined)
 
-    def get_action(self, x, mask=None):
+    def get_action(self, x, mask=None, deterministic=True):
         if x.dim() == 1:
             x = x.unsqueeze(0)
         if mask is not None and mask.dim() == 1:
@@ -74,16 +74,22 @@ class Agent(nn.Module):
         if mask is not None:
             logits = logits + (mask == 0) * -1e9
             
+        if deterministic:
+            return torch.argmax(logits, dim=1).item()
+            
         probs = Categorical(logits=logits)
         return probs.sample().item()
 
 def main():
-    if len(sys.argv) < 2:
-        print("Usage: python play.py <checkpoint_path> [seed]")
-        sys.exit(1)
+    import argparse
+    parser = argparse.ArgumentParser()
+    parser.add_argument("checkpoint", type=str, help="Path to checkpoint")
+    parser.add_argument("seed", type=int, nargs="?", default=None, help="Optional seed")
+    parser.add_argument("--stochastic", action="store_true", help="Use sampling instead of argmax")
+    args = parser.parse_args()
         
-    checkpoint_path = sys.argv[1]
-    seed = int(sys.argv[2]) if len(sys.argv) > 2 else None
+    checkpoint_path = args.checkpoint
+    seed = args.seed
     arch = "cnn" # Default to the Champion CNN architecture
     
     # Initialize environment via PufferLib wrapper
@@ -105,6 +111,10 @@ def main():
         
     print(f"Using device: {device} for playback.")
     print(f"Seed: {seed}")
+    if seed is not None:
+        torch.manual_seed(seed)
+        np.random.seed(seed)
+        
     agent = Agent(obs_size, action_size, arch=arch).to(device)
     
     if os.path.exists(checkpoint_path):
@@ -132,7 +142,7 @@ def main():
         tensor_obs = torch.Tensor(obs_flat[192 : 192 + 139]).unsqueeze(0).to(device)
         
         with torch.no_grad():
-            action = agent.get_action(tensor_obs, mask=tensor_mask)
+            action = agent.get_action(tensor_obs, mask=tensor_mask, deterministic=not args.stochastic)
             
         obs, reward, terminated, truncated, info = puffer_env.step(action)
         done = terminated or truncated
