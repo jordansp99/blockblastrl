@@ -1,4 +1,5 @@
 import os
+import argparse
 import warnings
 warnings.filterwarnings("ignore", category=UserWarning, module="gym")
 import time
@@ -55,7 +56,7 @@ class ChampionAgent(nn.Module):
 
     def _get_hidden(self, x):
         board = x[:, :64].view(-1, 1, 8, 8).float()
-        shapes = x[:, 64:].float()
+        shapes = x[:, 64:139].float()
         l_feat = self.local_conv(board)
         g_feat = self.global_conv(board)
         r_feat = self.row_conv(board)
@@ -83,6 +84,11 @@ def make_env(**kwargs):
     )
 
 def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--checkpoint", type=str, default=None, help="Path to a checkpoint to load")
+    parser.add_argument("--run-name", type=str, default=None, help="The name of the run (for TensorBoard)")
+    args = parser.parse_args()
+
     # PPO CONFIGURATION
     num_envs = 128 
     num_steps = 256 
@@ -107,9 +113,19 @@ def main():
     
     envs = pufferlib.vector.make(make_env, num_envs=num_envs, backend=pufferlib.vector.Serial)
     agent = ChampionAgent().to(device)
+    
+    if args.checkpoint:
+        if os.path.exists(args.checkpoint):
+            agent.load_state_dict(torch.load(args.checkpoint, map_location=device))
+            print(f"Loaded checkpoint: {args.checkpoint}")
+        else:
+            print(f"Error: Checkpoint {args.checkpoint} not found.")
+            return
+
     optimizer = optim.Adam(agent.parameters(), lr=learning_rate, eps=1e-5)
     
-    run_name = f"PPO_MARATHON_{int(time.time())}"
+    # Use existing run_name if provided to continue TensorBoard logs
+    run_name = args.run_name if args.run_name else f"PPO_MARATHON_{int(time.time())}"
     writer = SummaryWriter(f"runs/{run_name}")
     
     obs_size, mask_size = 139, 192
