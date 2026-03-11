@@ -7,7 +7,7 @@ import os
 class BlockBlastEnv(gymnasium.Env):
     metadata = {"render_modes": ["human"]}
 
-    def __init__(self, render_mode=None):
+    def __init__(self, render_mode=None, seed=None):
         self.render_mode = render_mode
         # Cross-platform library loading (macOS, Linux, Windows)
         dir_path = os.path.dirname(__file__)
@@ -25,6 +25,7 @@ class BlockBlastEnv(gymnasium.Env):
         self.lib = cdll.LoadLibrary(lib_path)
         
         # Define C functions
+        self.lib.init_game.argtypes = [c_int]
         self.lib.init_game.restype = c_void_p
         self.lib.reset_game.argtypes = [c_void_p]
         self.lib.get_observation.argtypes = [c_void_p, POINTER(c_int)]
@@ -34,7 +35,7 @@ class BlockBlastEnv(gymnasium.Env):
         self.lib.close_render.argtypes = []
         self.lib.free_game.argtypes = [c_void_p]
 
-        self.state_ptr = self.lib.init_game()
+        self.state_ptr = self.lib.init_game(seed if seed is not None else -1)
 
         # Observation space: 
         # 64 for board, 75 for 3 shapes (3 * 25) -> 139 integers

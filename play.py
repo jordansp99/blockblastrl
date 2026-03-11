@@ -79,16 +79,17 @@ class Agent(nn.Module):
 
 def main():
     if len(sys.argv) < 2:
-        print("Usage: python play.py <checkpoint_path>")
+        print("Usage: python play.py <checkpoint_path> [seed]")
         sys.exit(1)
         
     checkpoint_path = sys.argv[1]
+    seed = int(sys.argv[2]) if len(sys.argv) > 2 else None
     arch = "cnn" # Default to the Champion CNN architecture
     
     # Initialize environment via PufferLib wrapper
     import pufferlib.emulation
     puffer_env = pufferlib.emulation.GymnasiumPufferEnv(
-        env_creator=lambda: env.BlockBlastEnv(render_mode="human")
+        env_creator=lambda: env.BlockBlastEnv(render_mode="human", seed=seed)
     )
     
     obs_size = 139

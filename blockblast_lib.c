@@ -54,10 +54,13 @@ void generate_shapes(GameState* state) {
     }
 }
 
-GameState* init_game() {
-    // Unique seed for each environment instance
-    static int call_count = 0;
-    srand(time(NULL) + (call_count++ * 100));
+GameState* init_game(int seed) {
+    if (seed == -1) {
+        static int call_count = 0;
+        srand(time(NULL) + (call_count++ * 1337));
+    } else {
+        srand(seed);
+    }
 
     GameState* state = (GameState*)malloc(sizeof(GameState));
     memset(state, 0, sizeof(GameState));
@@ -221,16 +224,11 @@ void step_game(GameState* state, int action, float* reward, bool* done) {
     int col = action % 8;
 
     if (!can_place(state, shape_idx, row, col)) {
-        *reward = -100.0f; // Heavy penalty for invalid move (should be masked out anyway)
+        *reward = -100.0f;
         *done = true;
         state->game_over = true;
         return;
     }
-
-    // Heuristics before action
-    float h1 = calculate_holes(state);
-    float b1 = calculate_bumpiness(state);
-    float conn1 = calculate_connectedness(state);
 
     Shape s = shapes_pool[state->current_shapes[shape_idx]];
     int blocks_placed = 0;
@@ -246,30 +244,13 @@ void step_game(GameState* state, int action, float* reward, bool* done) {
     state->shape_active[shape_idx] = false;
     int lines_cleared = clear_lines(state);
     
-    // Heuristics after action
-    float h2 = calculate_holes(state);
-    float b2 = calculate_bumpiness(state);
-    float conn2 = calculate_connectedness(state);
-    bool gap_exists = has_3x3_gap(state);
-
-    // ADVANCED REWARD CALCULATION
+    // SIMPLIFIED STRATEGIC REWARD
     float base_reward = (float)blocks_placed;
-    float clear_reward = 0;
-    if (lines_cleared > 0) {
-        // Exponential reward for multi-line clears (1: 100, 2: 300, 3: 600, 4: 1000)
-        clear_reward = (float)(lines_cleared * (lines_cleared + 1) / 2) * 100.0f;
-    }
+    float line_reward = (float)(lines_cleared * 100);
+    float safety_bonus = has_3x3_gap(state) ? 10.0f : -20.0f; 
 
-    float hole_penalty = (h2 - h1) * 15.0f;      // Strong discouragement of holes
-    float bump_penalty = (b2 - b1) * 2.0f;       // Slight discouragement of uneven surfaces
-    float connectedness_bonus = (conn2 - conn1) * 1.5f; // Reward for placing blocks adjacent to each other
-    float safety_bonus = gap_exists ? 2.0f : -5.0f; // Reward for maintaining space for big blocks
-
-    *reward = base_reward + clear_reward - hole_penalty - bump_penalty + connectedness_bonus + safety_bonus;
+    *reward = base_reward + line_reward + safety_bonus;
     
-    // Small survival reward to encourage staying alive
-    *reward += 1.0f;
-
     state->score += (int)*reward;
 
     bool all_used = true;
@@ -280,7 +261,7 @@ void step_game(GameState* state, int action, float* reward, bool* done) {
     state->game_over = *done;
     
     if (*done) {
-        *reward = -100.0f; // Terminal failure penalty
+        *reward = -100.0f; 
     }
 }
 
