@@ -119,10 +119,21 @@ def main():
     envs = pufferlib.vector.make(make_env, num_envs=num_envs, backend=pufferlib.vector.Serial)
     agent = ChampionAgent().to(device)
     
+    start_update = 1
+    global_step = 0
+    
     if args.checkpoint:
         if os.path.exists(args.checkpoint):
-            agent.load_state_dict(torch.load(args.checkpoint, map_location=device))
-            print(f"Loaded checkpoint: {args.checkpoint}")
+            checkpoint = torch.load(args.checkpoint, map_location=device)
+            # Handle both old (state_dict only) and new (dict with metadata) checkpoints
+            if isinstance(checkpoint, dict) and "agent_state_dict" in checkpoint:
+                agent.load_state_dict(checkpoint["agent_state_dict"])
+                start_update = checkpoint.get("update", 0) + 1
+                global_step = checkpoint.get("global_step", 0)
+                print(f"Loaded checkpoint: {args.checkpoint} (Resuming from update {start_update})")
+            else:
+                agent.load_state_dict(checkpoint)
+                print(f"Loaded checkpoint: {args.checkpoint} (Legacy format)")
         else:
             print(f"Error: Checkpoint {args.checkpoint} not found.")
             return
@@ -155,12 +166,11 @@ def main():
     next_obs = torch.Tensor(next_obs).to(device)
     next_done = torch.zeros(num_envs).to(device)
     
-    global_step = 0
     total_episodes = 0
     start_time = time.time()
     num_updates = total_timesteps // batch_size
     
-    for update in itertools.count(1):
+    for update in itertools.count(start_update):
         # Annealing the rate if instructed to do so.
         if anneal_lr:
             frac = 1.0 - (update - 1.0) / num_updates
@@ -284,7 +294,12 @@ def main():
         if update == 1 or update % 50 == 0:
             checkpoint_path = f"checkpoints/{run_name}/update_{update}.pt"
             os.makedirs(os.path.dirname(checkpoint_path), exist_ok=True)
-            torch.save(agent.state_dict(), checkpoint_path)
+            torch.save({
+                "agent_state_dict": agent.state_dict(),
+                "optimizer_state_dict": optimizer.state_dict(),
+                "update": update,
+                "global_step": global_step,
+            }, checkpoint_path)
 
     envs.close()
     writer.close()

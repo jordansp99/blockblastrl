@@ -108,8 +108,13 @@ def main():
     agent = Agent(obs_size, action_size, arch=arch).to(device)
     
     if os.path.exists(checkpoint_path):
-        agent.load_state_dict(torch.load(checkpoint_path, map_location=device))
-        print(f"Loaded checkpoint: {checkpoint_path}")
+        checkpoint = torch.load(checkpoint_path, map_location=device)
+        if isinstance(checkpoint, dict) and "agent_state_dict" in checkpoint:
+            agent.load_state_dict(checkpoint["agent_state_dict"])
+            print(f"Loaded checkpoint: {checkpoint_path} (from update {checkpoint.get('update')})")
+        else:
+            agent.load_state_dict(checkpoint)
+            print(f"Loaded checkpoint: {checkpoint_path} (Legacy format)")
     else:
         print(f"Error: Checkpoint {checkpoint_path} not found.")
         sys.exit(1)
