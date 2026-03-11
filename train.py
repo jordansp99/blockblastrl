@@ -80,18 +80,20 @@ def make_env(**kwargs):
     )
 
 def main():
-    # AGGRESSIVE MARATHON CONFIGURATION
-    num_envs = 128 
-    num_steps = 512 # Longer memory for line completion awareness
-    total_timesteps = 50000000 
-    learning_rate = 1e-3 # Fast learning
-    ent_coef = 0.01 # Focus on exploitation
+    # OPTIMIZED MULTI-CORE CONFIGURATION
+    import multiprocessing
+    cpus = multiprocessing.cpu_count()
+    num_envs = cpus * 32 # Scale based on CPU cores
+    num_steps = 256 # Shorter steps for more frequent updates
+    total_timesteps = 100_000_000 
+    learning_rate = 1e-3 
+    ent_coef = 0.01 
     gamma = 0.999
     
     device = torch.device("cuda" if torch.cuda.is_available() else "mps" if torch.backends.mps.is_available() else "cpu")
-    print(f"Starting Strategic Marathon on {device}...")
+    print(f"Starting Optimized Marathon on {device} with {num_envs} envs across {cpus} cores...")
     
-    envs = pufferlib.vector.make(make_env, num_envs=num_envs, backend=pufferlib.vector.Serial)
+    envs = pufferlib.vector.make(make_env, num_envs=num_envs, backend=pufferlib.vector.Multiprocessing)
     agent = ChampionAgent().to(device)
     optimizer = optim.Adam(agent.parameters(), lr=learning_rate, eps=1e-5)
     
