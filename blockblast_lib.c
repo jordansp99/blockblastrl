@@ -125,6 +125,40 @@ bool check_game_over(GameState* state) {
 }
 
 // HEURISTICS FOR RL
+bool has_3x3_gap(GameState* state) {
+    for (int r = 0; r <= BOARD_SIZE - 3; r++) {
+        for (int c = 0; c <= BOARD_SIZE - 3; c++) {
+            bool gap = true;
+            for (int i = 0; i < 3; i++) {
+                for (int j = 0; j < 3; j++) {
+                    if (state->board[r + i][c + j]) {
+                        gap = false;
+                        break;
+                    }
+                }
+                if (!gap) break;
+            }
+            if (gap) return true;
+        }
+    }
+    return false;
+}
+
+float calculate_connectedness(GameState* state) {
+    float connections = 0;
+    for (int r = 0; r < BOARD_SIZE; r++) {
+        for (int c = 0; c < BOARD_SIZE; c++) {
+            if (state->board[r][c]) {
+                // Check right
+                if (c + 1 < BOARD_SIZE && state->board[r][c + 1]) connections += 1.0f;
+                // Check down
+                if (r + 1 < BOARD_SIZE && state->board[r + 1][c]) connections += 1.0f;
+            }
+        }
+    }
+    return connections;
+}
+
 float calculate_holes(GameState* state) {
     float holes = 0;
     for (int j = 0; j < BOARD_SIZE; j++) {
@@ -192,6 +226,7 @@ void step_game(GameState* state, int action, float* reward, bool* done) {
     // Heuristics before action
     float h1 = calculate_holes(state);
     float b1 = calculate_bumpiness(state);
+    float conn1 = calculate_connectedness(state);
 
     Shape s = shapes_pool[state->current_shapes[shape_idx]];
     int blocks_placed = 0;
@@ -210,6 +245,8 @@ void step_game(GameState* state, int action, float* reward, bool* done) {
     // Heuristics after action
     float h2 = calculate_holes(state);
     float b2 = calculate_bumpiness(state);
+    float conn2 = calculate_connectedness(state);
+    bool gap_exists = has_3x3_gap(state);
 
     // ADVANCED REWARD CALCULATION
     float base_reward = (float)blocks_placed;
@@ -221,8 +258,10 @@ void step_game(GameState* state, int action, float* reward, bool* done) {
 
     float hole_penalty = (h2 - h1) * 15.0f;      // Strong discouragement of holes
     float bump_penalty = (b2 - b1) * 2.0f;       // Slight discouragement of uneven surfaces
-    
-    *reward = base_reward + clear_reward - hole_penalty - bump_penalty;
+    float connectedness_bonus = (conn2 - conn1) * 1.5f; // Reward for placing blocks adjacent to each other
+    float safety_bonus = gap_exists ? 2.0f : -5.0f; // Reward for maintaining space for big blocks
+
+    *reward = base_reward + clear_reward - hole_penalty - bump_penalty + connectedness_bonus + safety_bonus;
     
     // Small survival reward to encourage staying alive
     *reward += 1.0f;
