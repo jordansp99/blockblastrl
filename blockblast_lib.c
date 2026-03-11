@@ -189,24 +189,7 @@ void step_game(GameState* state, int action, float* reward, bool* done) {
         return;
     }
 
-    float holes_before = calculate_holes(state);
     Shape s = shapes_pool[state->current_shapes[shape_idx]];
-    
-    // Snugness Check (How many edges touch walls or existing blocks)
-    int snugness = 0;
-    for (int r = 0; r < s.height; r++) {
-        for (int c = 0; c < s.width; c++) {
-            if (s.blocks[r][c]) {
-                int br = row + r;
-                int bc = col + c;
-                if (br == 0 || state->board[br-1][bc]) snugness++;
-                if (br == 7 || state->board[br+1][bc]) snugness++;
-                if (bc == 0 || state->board[br][bc-1]) snugness++;
-                if (bc == 7 || state->board[br][bc+1]) snugness++;
-            }
-        }
-    }
-
     int blocks_placed = 0;
     for (int r = 0; r < s.height; r++) {
         for (int c = 0; c < s.width; c++) {
@@ -220,17 +203,8 @@ void step_game(GameState* state, int action, float* reward, bool* done) {
     state->shape_active[shape_idx] = false;
     int lines_cleared = clear_lines(state);
     
-    float holes_after = calculate_holes(state);
-    float hole_diff = holes_before - holes_after; // Positive if holes were filled
-    
-    // EXPERT REWARD SYSTEM:
-    // 1. Snugness (Perfect fits are rewarded)
-    // 2. Hole Reduction (Filling gaps is rewarded)
-    // 3. Massive Line Clears (+500 squared)
-    float snug_reward = (snugness * 0.5f);
-    float hole_bonus = (hole_diff > 0) ? (hole_diff * 20.0f) : (hole_diff * 30.0f); // Heavy penalty for new holes
-
-    *reward = (blocks_placed * 0.1f) + snug_reward + hole_bonus + (lines_cleared * lines_cleared * 500.0f) + 0.1f;
+    // SIMPLE REWARD: 1 point per block, 100 points per line
+    *reward = (float)blocks_placed + (float)(lines_cleared * 100);
     state->score += (int)*reward;
 
     bool all_used = true;
@@ -239,6 +213,7 @@ void step_game(GameState* state, int action, float* reward, bool* done) {
 
     *done = check_game_over(state);
     state->game_over = *done;
+    if (*done) *reward -= 10.0f; // Penalty for game over
 }
 
 void free_game(GameState* state) { free(state); }
