@@ -13,6 +13,8 @@ import pufferlib
 import pufferlib.vector
 import pufferlib.emulation
 import itertools
+import subprocess
+import webbrowser
 from torch.utils.tensorboard import SummaryWriter
 
 class ChampionAgent(nn.Module):
@@ -89,6 +91,7 @@ def main():
     parser.add_argument("--checkpoint", type=str, default=None, help="Path to a checkpoint to load")
     parser.add_argument("--run-name", type=str, default=None, help="The name of the run (for TensorBoard)")
     parser.add_argument("--total-timesteps", type=int, default=1_000_000_000, help="Total timesteps (default: 1B for 'forever')")
+    parser.add_argument("--no-tensorboard", action="store_true", help="Don't launch tensorboard")
     args = parser.parse_args()
 
     # PPO CONFIGURATION
@@ -129,6 +132,13 @@ def main():
     # Use existing run_name if provided to continue TensorBoard logs
     run_name = args.run_name if args.run_name else f"PPO_MARATHON_{int(time.time())}"
     writer = SummaryWriter(f"runs/{run_name}")
+    
+    if not args.no_tensorboard:
+        print(f"Launching TensorBoard for {run_name}...")
+        subprocess.Popen(["tensorboard", "--logdir=runs", "--port=6006"], 
+                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        time.sleep(2) # Wait for TB to start
+        webbrowser.open("http://localhost:6006")
     
     obs_size, mask_size = 139, 192
     obs_shape = envs.single_observation_space.shape
