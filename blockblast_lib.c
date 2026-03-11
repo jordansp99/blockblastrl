@@ -183,11 +183,15 @@ void step_game(GameState* state, int action, float* reward, bool* done) {
     int col = action % 8;
 
     if (!can_place(state, shape_idx, row, col)) {
-        *reward = -10.0f;
+        *reward = -100.0f; // Heavy penalty for invalid move (should be masked out anyway)
         *done = true;
         state->game_over = true;
         return;
     }
+
+    // Heuristics before action
+    float h1 = calculate_holes(state);
+    float b1 = calculate_bumpiness(state);
 
     Shape s = shapes_pool[state->current_shapes[shape_idx]];
     int blocks_placed = 0;
@@ -203,8 +207,26 @@ void step_game(GameState* state, int action, float* reward, bool* done) {
     state->shape_active[shape_idx] = false;
     int lines_cleared = clear_lines(state);
     
-    // SIMPLE REWARD: 1 point per block, 100 points per line
-    *reward = (float)blocks_placed + (float)(lines_cleared * 100);
+    // Heuristics after action
+    float h2 = calculate_holes(state);
+    float b2 = calculate_bumpiness(state);
+
+    // ADVANCED REWARD CALCULATION
+    float base_reward = (float)blocks_placed;
+    float clear_reward = 0;
+    if (lines_cleared > 0) {
+        // Exponential reward for multi-line clears (1: 100, 2: 300, 3: 600, 4: 1000)
+        clear_reward = (float)(lines_cleared * (lines_cleared + 1) / 2) * 100.0f;
+    }
+
+    float hole_penalty = (h2 - h1) * 15.0f;      // Strong discouragement of holes
+    float bump_penalty = (b2 - b1) * 2.0f;       // Slight discouragement of uneven surfaces
+    
+    *reward = base_reward + clear_reward - hole_penalty - bump_penalty;
+    
+    // Small survival reward to encourage staying alive
+    *reward += 1.0f;
+
     state->score += (int)*reward;
 
     bool all_used = true;
@@ -213,7 +235,10 @@ void step_game(GameState* state, int action, float* reward, bool* done) {
 
     *done = check_game_over(state);
     state->game_over = *done;
-    if (*done) *reward -= 10.0f; // Penalty for game over
+    
+    if (*done) {
+        *reward = -100.0f; // Terminal failure penalty
+    }
 }
 
 void free_game(GameState* state) { free(state); }
