@@ -48,12 +48,10 @@ typedef struct {
     unsigned int rng_state;
 } GameState;
 
-// Simple, fast Xorshift PRNG for per-state randomness
+// Simple, robust LCG for per-state randomness
 unsigned int local_rand(GameState* state) {
-    state->rng_state ^= state->rng_state << 13;
-    state->rng_state ^= state->rng_state >> 17;
-    state->rng_state ^= state->rng_state << 5;
-    return state->rng_state;
+    state->rng_state = state->rng_state * 1103515245 + 12345;
+    return (state->rng_state / 65536) % 32768;
 }
 
 void generate_shapes(GameState* state) {
@@ -70,6 +68,8 @@ void seed_game(GameState* state, int seed) {
     } else {
         state->rng_state = (unsigned int)seed;
     }
+    // Ensure state is not 0 (though LCG handles 0 fine, it's good practice)
+    if (state->rng_state == 0) state->rng_state = 1;
     // Warm up the RNG
     for (int i = 0; i < 10; i++) local_rand(state);
 }
@@ -86,7 +86,9 @@ GameState* init_game(int seed) {
 }
 
 void reset_game(GameState* state) {
+    unsigned int saved_rng = state->rng_state;
     memset(state, 0, sizeof(GameState));
+    state->rng_state = saved_rng;
     for (int i=0; i<8; i++)
         for (int j=0; j<8; j++)
             state->board_colors[i][j] = -1;
