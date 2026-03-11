@@ -1,0 +1,21 @@
+# Python
+venv/
+__pycache__/
+*.pyc
+.ipynb_checkpoints
+
+# RL Artifacts
+runs/
+checkpoints/
+optuna_study.db
+optuna_surface_plot.html
+
+# Compiled Binaries
+*.dylib
+*.so
+*.o
+blockblast
+blockblast_gui
+
+# macOS
+.DS_Store
