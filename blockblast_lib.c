@@ -55,6 +55,10 @@ void generate_shapes(GameState* state) {
 }
 
 GameState* init_game() {
+    // Unique seed for each environment instance
+    static int call_count = 0;
+    srand(time(NULL) + (call_count++ * 100));
+
     GameState* state = (GameState*)malloc(sizeof(GameState));
     memset(state, 0, sizeof(GameState));
     for (int i=0; i<8; i++)
