@@ -9,14 +9,18 @@ class BlockBlastEnv(gym.Env):
 
     def __init__(self, render_mode=None):
         self.render_mode = render_mode
-        # Cross-platform library loading
+        # Cross-platform library loading (macOS, Linux, Windows)
         dir_path = os.path.dirname(__file__)
-        lib_path = os.path.join(dir_path, "libblockblast.dylib")
-        if not os.path.exists(lib_path):
-            lib_path = os.path.join(dir_path, "libblockblast.so")
+        exts = [".dylib", ".so", ".dll"]
+        lib_path = None
+        for ext in exts:
+            p = os.path.join(dir_path, f"libblockblast{ext}")
+            if os.path.exists(p):
+                lib_path = p
+                break
             
-        if not os.path.exists(lib_path):
-            raise FileNotFoundError(f"Could not find libblockblast.dylib or .so in {dir_path}. Please compile the C library first.")
+        if not lib_path:
+            raise FileNotFoundError(f"Could not find libblockblast with .dylib, .so, or .dll in {dir_path}. Please compile the C library first.")
             
         self.lib = cdll.LoadLibrary(lib_path)
         
