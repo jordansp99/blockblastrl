@@ -11,43 +11,54 @@ import sys
 class Agent(nn.Module):
     def __init__(self, obs_size, action_size, arch="cnn"):
         super().__init__()
-        self.arch = arch
-        if arch == "cnn":
-            self.conv_net = nn.Sequential(
-                nn.Conv2d(1, 32, kernel_size=3, padding=1),
-                nn.ReLU(),
-                nn.Conv2d(32, 64, kernel_size=3, padding=1),
-                nn.ReLU(),
-                nn.Conv2d(64, 64, kernel_size=3, padding=1),
-                nn.ReLU(),
-                nn.Flatten()
-            )
-            self.fc = nn.Sequential(
-                nn.Linear(4096 + 75, 512),
-                nn.ReLU(),
-                nn.Linear(512, 256),
-                nn.ReLU()
-            )
-        else: # MLP
-            self.fc = nn.Sequential(
-                nn.Linear(139, 512),
-                nn.ReLU(),
-                nn.Linear(512, 512),
-                nn.ReLU(),
-                nn.Linear(512, 256),
-                nn.ReLU()
-            )
+        # Local view
+        self.local_conv = nn.Sequential(
+            nn.Conv2d(1, 32, kernel_size=3, padding=1),
+            nn.ReLU(),
+            nn.Conv2d(32, 64, kernel_size=3, padding=1),
+            nn.ReLU(),
+            nn.Flatten()
+        )
+        # Global view
+        self.global_conv = nn.Sequential(
+            nn.Conv2d(1, 32, kernel_size=8),
+            nn.ReLU(),
+            nn.Flatten()
+        )
+        self.row_conv = nn.Sequential(
+            nn.Conv2d(1, 16, kernel_size=(1, 8)),
+            nn.ReLU(),
+            nn.Flatten()
+        )
+        self.col_conv = nn.Sequential(
+            nn.Conv2d(1, 16, kernel_size=(8, 1)),
+            nn.ReLU(),
+            nn.Flatten()
+        )
+        
+        # Combined features (4096 + 32 + 128 + 128 + 75 = 4459)
+        self.fc = nn.Sequential(
+            nn.Linear(4459, 512),
+            nn.ReLU(),
+            nn.Linear(512, 512),
+            nn.ReLU(),
+            nn.Linear(512, 256),
+            nn.ReLU()
+        )
         self.actor = nn.Linear(256, action_size)
         self.critic = nn.Linear(256, 1)
 
     def _get_hidden(self, x):
-        if self.arch == "cnn":
-            board = x[:, :64].view(-1, 1, 8, 8).float()
-            shapes = x[:, 64:139].float()
-            board_features = self.conv_net(board)
-            return self.fc(torch.cat([board_features, shapes], dim=1))
-        else:
-            return self.fc(x[:, :139].float())
+        board = x[:, :64].view(-1, 1, 8, 8).float()
+        shapes = x[:, 64:139].float()
+        
+        l_feat = self.local_conv(board)
+        g_feat = self.global_conv(board)
+        r_feat = self.row_conv(board)
+        c_feat = self.col_conv(board)
+        
+        combined = torch.cat([l_feat, g_feat, r_feat, c_feat, shapes], dim=1)
+        return self.fc(combined)
 
     def get_action(self, x, mask=None):
         if x.dim() == 1:
@@ -65,12 +76,12 @@ class Agent(nn.Module):
         return probs.sample().item()
 
 def main():
-    if len(sys.argv) < 3:
-        print("Usage: python play.py <checkpoint_path> <arch: cnn/mlp>")
+    if len(sys.argv) < 2:
+        print("Usage: python play.py <checkpoint_path>")
         sys.exit(1)
         
     checkpoint_path = sys.argv[1]
-    arch = sys.argv[2]
+    arch = "cnn" # Default to the Champion CNN architecture
     
     # Initialize environment via PufferLib wrapper
     import pufferlib.emulation
@@ -81,7 +92,15 @@ def main():
     obs_size = 139
     action_size = 192
     
-    device = torch.device("cpu")
+    # Detect device (MPS, CUDA, or CPU)
+    if torch.backends.mps.is_available():
+        device = torch.device("mps")
+    elif torch.cuda.is_available():
+        device = torch.device("cuda")
+    else:
+        device = torch.device("cpu")
+        
+    print(f"Using device: {device} for playback.")
     agent = Agent(obs_size, action_size, arch=arch).to(device)
     
     if os.path.exists(checkpoint_path):
@@ -98,9 +117,10 @@ def main():
     print("AI is now playing (Slow Speed)...")
     
     while not done:
-        # PufferLib flattens: [obs (139), mask (192)]
-        tensor_obs = torch.Tensor(obs[:139])
-        tensor_mask = torch.Tensor(obs[-192:])
+        # Correct Alphabetical Slicing: [mask (192), obs (139)]
+        obs_flat = obs.flatten()
+        tensor_mask = torch.Tensor(obs_flat[:192]).unsqueeze(0).to(device)
+        tensor_obs = torch.Tensor(obs_flat[192 : 192 + 139]).unsqueeze(0).to(device)
         
         with torch.no_grad():
             action = agent.get_action(tensor_obs, mask=tensor_mask)
@@ -111,7 +131,9 @@ def main():
         # SLOW SPEED: 1 second per move
         time.sleep(1.0)
         
-    print("Game Over!")
+    print("Game Over! Board is full or no valid moves left.")
+    # HANG ON GAMEOVER: Wait 5 seconds before closing
+    time.sleep(5.0)
     puffer_env.close()
 
 if __name__ == "__main__":

@@ -2,6 +2,8 @@
 #include <stdbool.h>
 #include <time.h>
 #include <string.h>
+#include <stdio.h>
+#include <math.h>
 #include "raylib.h"
 
 #define BOARD_SIZE 8
@@ -33,12 +35,12 @@ Shape shapes_pool[] = {
     {3, 2, {{1,1,1}, {0,1,0}}, DARKGRAY},
     {2, 3, {{1,0}, {1,1}, {1,0}}, MAROON}
 };
-int num_shapes_pool = 17;
+const int NUM_SHAPES = sizeof(shapes_pool) / sizeof(shapes_pool[0]);
 
 typedef struct {
     int board[BOARD_SIZE][BOARD_SIZE];
-    int board_colors[BOARD_SIZE][BOARD_SIZE]; // Store color index (0-16) or -1
-    int current_shapes[3]; // Indices in shapes_pool
+    int board_colors[BOARD_SIZE][BOARD_SIZE]; 
+    int current_shapes[3]; 
     bool shape_active[3];
     int score;
     bool game_over;
@@ -46,7 +48,7 @@ typedef struct {
 
 void generate_shapes(GameState* state) {
     for (int i = 0; i < 3; i++) {
-        state->current_shapes[i] = rand() % num_shapes_pool;
+        state->current_shapes[i] = rand() % NUM_SHAPES;
         state->shape_active[i] = true;
     }
 }
@@ -73,7 +75,6 @@ bool can_place(GameState* state, int shape_idx, int row, int col) {
     if (shape_idx < 0 || shape_idx > 2 || !state->shape_active[shape_idx]) return false;
     Shape s = shapes_pool[state->current_shapes[shape_idx]];
     if (row < 0 || col < 0 || row + s.height > BOARD_SIZE || col + s.width > BOARD_SIZE) return false;
-    
     for (int r = 0; r < s.height; r++) {
         for (int c = 0; c < s.width; c++) {
             if (s.blocks[r][c] && state->board[row + r][col + c]) return false;
@@ -83,10 +84,9 @@ bool can_place(GameState* state, int shape_idx, int row, int col) {
 }
 
 int clear_lines(GameState* state) {
-    bool rows_to_clear[BOARD_SIZE] = {false};
-    bool cols_to_clear[BOARD_SIZE] = {false};
+    bool rows_to_clear[BOARD_SIZE] = {0};
+    bool cols_to_clear[BOARD_SIZE] = {0};
     int lines = 0;
-
     for (int i = 0; i < BOARD_SIZE; i++) {
         bool r_full = true, c_full = true;
         for (int j = 0; j < BOARD_SIZE; j++) {
@@ -96,23 +96,16 @@ int clear_lines(GameState* state) {
         rows_to_clear[i] = r_full;
         cols_to_clear[i] = c_full;
     }
-
     for (int i = 0; i < BOARD_SIZE; i++) {
         if (rows_to_clear[i]) {
             lines++;
-            for (int j = 0; j < BOARD_SIZE; j++) {
-                state->board[i][j] = 0;
-                state->board_colors[i][j] = -1;
-            }
+            for (int j = 0; j < BOARD_SIZE; j++) { state->board[i][j] = 0; state->board_colors[i][j] = -1; }
         }
     }
     for (int i = 0; i < BOARD_SIZE; i++) {
         if (cols_to_clear[i]) {
             lines++;
-            for (int j = 0; j < BOARD_SIZE; j++) {
-                state->board[j][i] = 0;
-                state->board_colors[j][i] = -1;
-            }
+            for (int j = 0; j < BOARD_SIZE; j++) { state->board[j][i] = 0; state->board_colors[j][i] = -1; }
         }
     }
     return lines;
@@ -130,58 +123,89 @@ bool check_game_over(GameState* state) {
     return true;
 }
 
-// Fills obs array with state. Size should be 8*8 + 3*5*5 = 64 + 75 = 139.
-// Board (64) + 3 Shapes (5x5 each = 75)
-void get_observation(GameState* state, int* obs) {
-    int idx = 0;
-    for (int i=0; i<8; i++) {
-        for (int j=0; j<8; j++) {
-            obs[idx++] = state->board[i][j];
+// HEURISTICS FOR RL
+float calculate_holes(GameState* state) {
+    float holes = 0;
+    for (int j = 0; j < BOARD_SIZE; j++) {
+        bool block_seen = false;
+        for (int i = 0; i < BOARD_SIZE; i++) {
+            if (state->board[i][j]) block_seen = true;
+            else if (block_seen && !state->board[i][j]) holes += 1.0f;
         }
     }
+    return holes;
+}
+
+float calculate_bumpiness(GameState* state) {
+    float bumpiness = 0;
+    int heights[BOARD_SIZE] = {0};
+    for (int j = 0; j < BOARD_SIZE; j++) {
+        for (int i = 0; i < BOARD_SIZE; i++) {
+            if (state->board[i][j]) {
+                heights[j] = BOARD_SIZE - i;
+                break;
+            }
+        }
+    }
+    for (int j = 0; j < BOARD_SIZE - 1; j++) {
+        bumpiness += abs(heights[j] - heights[j+1]);
+    }
+    return bumpiness;
+}
+
+void get_observation(GameState* state, int* obs) {
+    int idx = 0;
+    for (int i=0; i<8; i++)
+        for (int j=0; j<8; j++)
+            obs[idx++] = state->board[i][j];
     for (int i=0; i<3; i++) {
         Shape s = shapes_pool[state->current_shapes[i]];
         for (int r=0; r<5; r++) {
             for (int c=0; c<5; c++) {
-                if (state->shape_active[i] && r < s.height && c < s.width) {
-                    obs[idx++] = s.blocks[r][c];
-                } else {
-                    obs[idx++] = 0;
-                }
+                if (state->shape_active[i] && r < s.height && c < s.width) obs[idx++] = s.blocks[r][c];
+                else obs[idx++] = 0;
             }
         }
     }
 }
 
-// Action mask array of size 192 (3 shapes * 8 rows * 8 cols)
 void get_action_mask(GameState* state, int* mask) {
     for (int i = 0; i < 192; i++) {
-        int shape_idx = i / 64;
-        int row = (i / 8) % 8;
-        int col = i % 8;
-        mask[i] = can_place(state, shape_idx, row, col) ? 1 : 0;
+        mask[i] = can_place(state, i / 64, (i / 8) % 8, i % 8) ? 1 : 0;
     }
 }
 
 void step_game(GameState* state, int action, float* reward, bool* done) {
-    if (state->game_over) {
-        *reward = 0;
-        *done = true;
-        return;
-    }
-
+    if (state->game_over) { *reward = 0; *done = true; return; }
     int shape_idx = action / 64;
     int row = (action / 8) % 8;
     int col = action % 8;
 
     if (!can_place(state, shape_idx, row, col)) {
-        *reward = -10.0f; // Invalid action penalty
+        *reward = -10.0f;
         *done = true;
         state->game_over = true;
         return;
     }
 
+    float holes_before = calculate_holes(state);
     Shape s = shapes_pool[state->current_shapes[shape_idx]];
+    
+    // Snugness Check (How many edges touch walls or existing blocks)
+    int snugness = 0;
+    for (int r = 0; r < s.height; r++) {
+        for (int c = 0; c < s.width; c++) {
+            if (s.blocks[r][c]) {
+                int br = row + r;
+                int bc = col + c;
+                if (br == 0 || state->board[br-1][bc]) snugness++;
+                if (br == 7 || state->board[br+1][bc]) snugness++;
+                if (bc == 0 || state->board[br][bc-1]) snugness++;
+                if (bc == 7 || state->board[br][bc+1]) snugness++;
+            }
+        }
+    }
+
     int blocks_placed = 0;
     for (int r = 0; r < s.height; r++) {
         for (int c = 0; c < s.width; c++) {
@@ -193,12 +217,20 @@ void step_game(GameState* state, int action, float* reward, bool* done) {
         }
     }
     state->shape_active[shape_idx] = false;
-    
     int lines_cleared = clear_lines(state);
     
-    float step_reward = blocks_placed + (lines_cleared * 10.0f) + 1.0f; // slight bonus for surviving
-    state->score += step_reward;
-    *reward = step_reward;
+    float holes_after = calculate_holes(state);
+    float hole_diff = holes_before - holes_after; // Positive if holes were filled
+    
+    // EXPERT REWARD SYSTEM:
+    // 1. Snugness (Perfect fits are rewarded)
+    // 2. Hole Reduction (Filling gaps is rewarded)
+    // 3. Massive Line Clears (+500 squared)
+    float snug_reward = (snugness * 0.5f);
+    float hole_bonus = (hole_diff > 0) ? (hole_diff * 20.0f) : (hole_diff * 30.0f); // Heavy penalty for new holes
+
+    *reward = (blocks_placed * 0.1f) + snug_reward + hole_bonus + (lines_cleared * lines_cleared * 500.0f) + 0.1f;
+    state->score += (int)*reward;
 
     bool all_used = true;
     for (int i=0; i<3; i++) if (state->shape_active[i]) all_used = false;
@@ -208,65 +240,46 @@ void step_game(GameState* state, int action, float* reward, bool* done) {
     state->game_over = *done;
 }
 
-void free_game(GameState* state) {
-    free(state);
-}
+void free_game(GameState* state) { free(state); }
 
-// Rendering
 bool window_initialized = false;
 void init_render() {
-    if (!window_initialized) {
-        InitWindow(500, 700, "Blockblast RL Training");
-        SetTargetFPS(60);
-        window_initialized = true;
-    }
+    if (!window_initialized) { InitWindow(500, 750, "BlockBlast Expert"); SetTargetFPS(60); window_initialized = true; }
 }
 
 void render_game_state(GameState* state) {
     if (!window_initialized) init_render();
-    
     BeginDrawing();
     ClearBackground(RAYWHITE);
-    
     int cell_size = 50;
-    int offset_x = 50, offset_y = 50;
-
-    // Draw Board
+    int offset_x = 50, offset_y = 80;
     for (int i=0; i<8; i++) {
         for (int j=0; j<8; j++) {
             Rectangle r = { offset_x + j*cell_size, offset_y + i*cell_size, cell_size-2, cell_size-2 };
             Color c = LIGHTGRAY;
             if (state->board[i][j]) {
                 int c_idx = state->board_colors[i][j];
-                if (c_idx >= 0 && c_idx < num_shapes_pool) c = shapes_pool[c_idx].color;
+                if (c_idx >= 0 && c_idx < NUM_SHAPES) c = shapes_pool[c_idx].color;
                 else c = DARKGRAY;
             }
             DrawRectangleRec(r, c);
         }
     }
-    
-    DrawText(TextFormat("Score: %d", state->score), 20, 10, 20, BLACK);
-    if (state->game_over) DrawText("GAME OVER", 150, 300, 40, RED);
-
-    // Draw Shapes
+    DrawText(TextFormat("Score: %d", state->score), 20, 20, 30, BLACK);
+    if (state->game_over) {
+        DrawRectangle(0, 0, 500, 750, Fade(BLACK, 0.6f));
+        DrawText("GAME OVER", 120, 350, 40, RED);
+    }
     for (int i=0; i<3; i++) {
         if (!state->shape_active[i]) continue;
         Shape s = shapes_pool[state->current_shapes[i]];
         for (int r=0; r<s.height; r++) {
             for (int c=0; c<s.width; c++) {
-                if (s.blocks[r][c]) {
-                    DrawRectangle(75 + i*150 + c*cell_size*0.6, 500 + r*cell_size*0.6, cell_size*0.6 - 1, cell_size*0.6 - 1, s.color);
-                }
+                if (s.blocks[r][c]) DrawRectangle(75 + i*150 + c*cell_size*0.6, 550 + r*cell_size*0.6, cell_size*0.6 - 1, cell_size*0.6 - 1, s.color);
             }
         }
     }
-    
     EndDrawing();
 }
 
-void close_render() {
-    if (window_initialized) {
-        CloseWindow();
-        window_initialized = false;
-    }
-}
+void close_render() { if (window_initialized) { CloseWindow(); window_initialized = false; } }

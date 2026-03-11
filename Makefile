@@ -3,14 +3,18 @@ CFLAGS = -shared -fPIC -Wall -O3
 LDFLAGS = -lraylib
 
 # Detect OS
-UNAME_S := $(shell uname -s)
-ifeq ($(UNAME_S),Darwin)
-    TARGET = libblockblast.dylib
-    # macOS Homebrew paths
-    CFLAGS += -I/opt/homebrew/include
-    LDFLAGS += -L/opt/homebrew/lib
+ifeq ($(OS),Windows_NT)
+    TARGET = libblockblast.dll
+    LDFLAGS += -lopengl32 -lgdi32 -lwinmm
 else
-    TARGET = libblockblast.so
+    UNAME_S := $(shell uname -s)
+    ifeq ($(UNAME_S),Darwin)
+        TARGET = libblockblast.dylib
+        CFLAGS += -I/opt/homebrew/include
+        LDFLAGS += -L/opt/homebrew/lib
+    else
+        TARGET = libblockblast.so
+    endif
 endif
 
 all: $(TARGET)
