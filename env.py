@@ -27,6 +27,7 @@ class BlockBlastEnv(gymnasium.Env):
         # Define C functions
         self.lib.init_game.argtypes = [c_int]
         self.lib.init_game.restype = c_void_p
+        self.lib.seed_game.argtypes = [c_int]
         self.lib.reset_game.argtypes = [c_void_p]
         self.lib.get_observation.argtypes = [c_void_p, POINTER(c_int)]
         self.lib.get_action_mask.argtypes = [c_void_p, POINTER(c_int)]
@@ -64,6 +65,8 @@ class BlockBlastEnv(gymnasium.Env):
 
     def reset(self, seed=None, options=None):
         super().reset(seed=seed)
+        if seed is not None:
+            self.lib.seed_game(seed)
         self.lib.reset_game(self.state_ptr)
         return self._get_obs(), {}
 

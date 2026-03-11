@@ -104,6 +104,7 @@ def main():
         device = torch.device("cpu")
         
     print(f"Using device: {device} for playback.")
+    print(f"Seed: {seed}")
     agent = Agent(obs_size, action_size, arch=arch).to(device)
     
     if os.path.exists(checkpoint_path):

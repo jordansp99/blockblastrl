@@ -10,11 +10,11 @@ else
     UNAME_S := $(shell uname -s)
     ifeq ($(UNAME_S),Darwin)
         TARGET = libblockblast.dylib
-        CFLAGS += -I/opt/homebrew/include
+        CFLAGS += -I/opt/homebrew/include -Iinclude
         LDFLAGS += -L/opt/homebrew/lib
     else
         TARGET = libblockblast.so
-        CFLAGS += -I./include
+        CFLAGS += -I./include -Iinclude
         LDFLAGS += -L./lib -Wl,-rpath,./lib
     endif
 endif

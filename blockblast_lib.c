@@ -54,14 +54,17 @@ void generate_shapes(GameState* state) {
     }
 }
 
-GameState* init_game(int seed) {
+void seed_game(int seed) {
     if (seed == -1) {
         static int call_count = 0;
         srand(time(NULL) + (call_count++ * 1337));
     } else {
         srand(seed);
     }
+}
 
+GameState* init_game(int seed) {
+    seed_game(seed);
     GameState* state = (GameState*)malloc(sizeof(GameState));
     memset(state, 0, sizeof(GameState));
     for (int i=0; i<8; i++)
