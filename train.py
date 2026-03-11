@@ -12,6 +12,7 @@ import env
 import pufferlib
 import pufferlib.vector
 import pufferlib.emulation
+import itertools
 from torch.utils.tensorboard import SummaryWriter
 
 class ChampionAgent(nn.Module):
@@ -87,12 +88,13 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--checkpoint", type=str, default=None, help="Path to a checkpoint to load")
     parser.add_argument("--run-name", type=str, default=None, help="The name of the run (for TensorBoard)")
+    parser.add_argument("--total-timesteps", type=int, default=1_000_000_000, help="Total timesteps (default: 1B for 'forever')")
     args = parser.parse_args()
 
     # PPO CONFIGURATION
     num_envs = 128 
     num_steps = 256 
-    total_timesteps = 50_000_000 
+    total_timesteps = args.total_timesteps
     learning_rate = 3e-4 # More stable for PPO
     anneal_lr = True
     gamma = 0.99
@@ -148,11 +150,11 @@ def main():
     start_time = time.time()
     num_updates = total_timesteps // batch_size
     
-    for update in range(1, num_updates + 1):
+    for update in itertools.count(1):
         # Annealing the rate if instructed to do so.
         if anneal_lr:
             frac = 1.0 - (update - 1.0) / num_updates
-            lrnow = frac * learning_rate
+            lrnow = max(frac * learning_rate, 0.0)
             optimizer.param_groups[0]["lr"] = lrnow
 
         for step in range(0, num_steps):
