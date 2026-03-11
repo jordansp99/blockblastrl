@@ -157,13 +157,13 @@ def main():
         optimizer.step()
         
         # Logging
-        avg_reward = rewards_buffer.mean().item()
-        sps = int(global_step / (time.time() - start_time))
+        avg_reward = float(rewards_buffer.mean().item())
+        sps = float(global_step / (time.time() - start_time))
         writer.add_scalar("charts/avg_reward", avg_reward, iteration)
         writer.add_scalar("charts/SPS", sps, iteration)
-        writer.add_scalar("losses/policy_loss", pg_loss.item(), iteration)
-        writer.add_scalar("losses/value_loss", v_loss.item(), iteration)
-        writer.add_scalar("losses/entropy", ent_loss.item(), iteration)
+        writer.add_scalar("losses/policy_loss", float(pg_loss.item()), iteration)
+        writer.add_scalar("losses/value_loss", float(v_loss.item()), iteration)
+        writer.add_scalar("losses/entropy", float(ent_loss.item()), iteration)
         
         if iteration % 100 == 0 or iteration == num_iterations:
             checkpoint_path = f"checkpoints/{run_name}/iter_{iteration}.pt"
