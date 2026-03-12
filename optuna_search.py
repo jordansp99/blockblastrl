@@ -302,6 +302,32 @@ def train(trial):
 
     envs.close()
     writer.close()
+    
+    # Save the final trial model so it can be played/tested
+    checkpoint_dir = f"checkpoints/optuna/{trial_run_name}"
+    os.makedirs(checkpoint_dir, exist_ok=True)
+    torch.save({
+        "agent_state_dict": agent.state_dict(),
+        "update": total_updates,
+        "global_step": total_updates * batch_size,
+    }, os.path.join(checkpoint_dir, "model.pt"))
+    
+    # Save config for play.py
+    import json
+    config = {
+        "arch": arch_type,
+        "fc_layers": fc_layers,
+        "cnn_channels": cnn_channels,
+        "lstm": lstm_hidden,
+        "transformer_layers": transformer_layers,
+        "transformer_heads": transformer_heads,
+        "activation": activation,
+        "ent_coef": ent_coef,
+        "lr": lr
+    }
+    with open(os.path.join(checkpoint_dir, "config.json"), "w") as f:
+        json.dump(config, f, indent=4)
+
     return np.mean(recent_rewards)
 
 if __name__ == "__main__":
