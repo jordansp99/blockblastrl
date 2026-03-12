@@ -134,7 +134,7 @@ def train(trial):
 
     num_envs = 32 # Small for fast iteration
     num_steps = 128
-    total_updates = 50 # 50 updates per trial is enough to see if it's learning
+    total_updates = 600 # ~2.5 million steps (32 * 128 * 600 = 2,457,600)
     
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     
@@ -283,3 +283,27 @@ if __name__ == "__main__":
     
     print("Best Params:", study.best_params)
     print("Best Value:", study.best_value)
+
+    # Launch full training with best parameters
+    print("\n" + "="*50)
+    print("STARTING FULL TRAINING WITH BEST PARAMETERS")
+    print("="*50)
+    
+    import subprocess
+    best = study.best_params
+    
+    cmd = [
+        "python", "train.py",
+        "--arch", str(best["arch_type"]),
+        "--lr", str(best["lr"]),
+        "--fc-layers"
+    ] + [str(best["fc_dim"])] * best["num_fc"]
+    
+    if best["arch_type"] == "cnn":
+        cmd += ["--cnn-channels", str(best["cnn_c1"]), str(best["cnn_c2"])]
+    
+    if "use_lstm" in best and best["use_lstm"]:
+        cmd += ["--lstm", str(best["lstm_hidden"])]
+        
+    print(f"Running: {' '.join(cmd)}")
+    subprocess.run(cmd)
