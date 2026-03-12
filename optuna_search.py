@@ -10,6 +10,7 @@ import pufferlib
 import pufferlib.vector
 import pufferlib.emulation
 import optuna
+from torch.utils.tensorboard import SummaryWriter
 
 class FlexibleAgent(nn.Module):
     def __init__(self, obs_size=139, action_size=192, 
@@ -122,8 +123,8 @@ def train(trial):
     fc_dim = trial.suggest_categorical("fc_dim", [128, 256, 512])
     fc_layers = [fc_dim] * num_fc
     
-    use_lstm = trial.suggest_categorical("use_lstm", [False]) # LSTM is tricky with manual loop, keep False for now
-    lstm_hidden = trial.suggest_categorical("lstm_hidden", [0]) if not use_lstm else trial.suggest_categorical("lstm_hidden", [64, 128])
+    use_lstm = trial.suggest_categorical("use_lstm", [True, False])
+    lstm_hidden = trial.suggest_categorical("lstm_hidden", [64, 128]) if use_lstm else 0
     
     cnn_channels = [32, 64]
     if arch_type == "cnn":
@@ -137,6 +138,13 @@ def train(trial):
     
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     
+    # Unique run name for TensorBoard
+    fc_str = "x".join(map(str, fc_layers))
+    cnn_str = f"C{cnn_channels[0]}x{cnn_channels[1]}" if arch_type == "cnn" else ""
+    lstm_str = f"_LSTM{lstm_hidden}" if lstm_hidden > 0 else ""
+    trial_run_name = f"Trial{trial.number}_{arch_type.upper()}_{cnn_str}_FC{fc_str}{lstm_str}_LR{lr:.5f}"
+    writer = SummaryWriter(f"runs/optuna/{trial_run_name}")
+
     envs = pufferlib.vector.make(make_env, num_envs=num_envs, backend=pufferlib.vector.Serial)
     agent = FlexibleAgent(arch_type=arch_type, cnn_channels=cnn_channels, fc_layers=fc_layers, lstm_hidden=lstm_hidden).to(device)
     optimizer = optim.Adam(agent.parameters(), lr=lr, eps=1e-5)
@@ -252,12 +260,21 @@ def train(trial):
         if len(recent_rewards) > 10:
             recent_rewards.pop(0)
             
+        # Logging to TensorBoard
+        global_step = update * batch_size
+        writer.add_scalar("charts/avg_reward", avg_reward, global_step)
+        writer.add_scalar("losses/policy_loss", pg_loss.item(), global_step)
+        writer.add_scalar("losses/value_loss", v_loss.item(), global_step)
+        writer.add_scalar("losses/entropy", entropy.mean().item(), global_step)
+
         trial.report(np.mean(recent_rewards), update)
         if trial.should_prune():
             envs.close()
+            writer.close()
             raise optuna.exceptions.TrialPruned()
 
     envs.close()
+    writer.close()
     return np.mean(recent_rewards)
 
 if __name__ == "__main__":
