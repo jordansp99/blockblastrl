@@ -17,68 +17,97 @@ import subprocess
 import webbrowser
 from torch.utils.tensorboard import SummaryWriter
 
-class ChampionAgent(nn.Module):
-    def __init__(self, obs_size=139):
+class FlexibleAgent(nn.Module):
+    def __init__(self, obs_size=139, action_size=192, 
+                 arch_type="cnn", 
+                 cnn_channels=[32, 64], 
+                 fc_layers=[512, 512, 256],
+                 lstm_hidden=0):
         super().__init__()
-        # Local view (Local details)
-        self.local_conv = nn.Sequential(
-            nn.Conv2d(1, 32, kernel_size=3, padding=1),
-            nn.ReLU(),
-            nn.Conv2d(32, 64, kernel_size=3, padding=1),
-            nn.ReLU(),
-            nn.Flatten()
-        )
-        # Global view (Rows, Columns, and Whole Board)
-        self.global_conv = nn.Sequential(
-            nn.Conv2d(1, 32, kernel_size=8), # Full board view
-            nn.ReLU(),
-            nn.Flatten()
-        )
-        self.row_conv = nn.Sequential(
-            nn.Conv2d(1, 16, kernel_size=(1, 8)), # Horizontal line detector
-            nn.ReLU(),
-            nn.Flatten()
-        )
-        self.col_conv = nn.Sequential(
-            nn.Conv2d(1, 16, kernel_size=(8, 1)), # Vertical line detector
-            nn.ReLU(),
-            nn.Flatten()
-        )
+        self.arch_type = arch_type
+        self.lstm_hidden = lstm_hidden
+        self.obs_size = obs_size
         
-        # Combined features (4096 + 32 + 128 + 128 + 75 = 4459)
-        self.fc = nn.Sequential(
-            nn.Linear(4459, 512),
-            nn.ReLU(),
-            nn.Linear(512, 512),
-            nn.ReLU(),
-            nn.Linear(512, 256),
-            nn.ReLU()
-        )
-        self.actor = nn.Linear(256, 192)
-        self.critic = nn.Linear(256, 1)
+        if arch_type == "cnn":
+            self.local_conv = nn.Sequential(
+                nn.Conv2d(1, cnn_channels[0], kernel_size=3, padding=1),
+                nn.ReLU(),
+                nn.Conv2d(cnn_channels[0], cnn_channels[1], kernel_size=3, padding=1),
+                nn.ReLU(),
+                nn.Flatten()
+            )
+            self.global_conv = nn.Sequential(
+                nn.Conv2d(1, 32, kernel_size=8),
+                nn.ReLU(),
+                nn.Flatten()
+            )
+            self.row_conv = nn.Sequential(
+                nn.Conv2d(1, 16, kernel_size=(1, 8)),
+                nn.ReLU(),
+                nn.Flatten()
+            )
+            self.col_conv = nn.Sequential(
+                nn.Conv2d(1, 16, kernel_size=(8, 1)),
+                nn.ReLU(),
+                nn.Flatten()
+            )
+            self.input_dim = cnn_channels[1] * 64 + 32 + 128 + 128 + 75
+        else:
+            self.input_dim = obs_size
+        
+        layers = []
+        last_dim = self.input_dim
+        for hidden in fc_layers:
+            layers.append(nn.Linear(last_dim, hidden))
+            layers.append(nn.ReLU())
+            last_dim = hidden
+        
+        self.fc = nn.Sequential(*layers)
+        
+        if lstm_hidden > 0:
+            self.lstm = nn.LSTM(last_dim, lstm_hidden)
+            last_dim = lstm_hidden
+            
+        self.actor = nn.Linear(last_dim, action_size)
+        self.critic = nn.Linear(last_dim, 1)
 
-    def _get_hidden(self, x):
-        board = x[:, :64].view(-1, 1, 8, 8).float()
-        shapes = x[:, 64:139].float()
-        l_feat = self.local_conv(board)
-        g_feat = self.global_conv(board)
-        r_feat = self.row_conv(board)
-        c_feat = self.col_conv(board)
-        combined = torch.cat([l_feat, g_feat, r_feat, c_feat, shapes], dim=1)
-        return self.fc(combined)
+    def _get_hidden(self, x, lstm_state=None):
+        if self.arch_type == "cnn":
+            board = x[:, :64].view(-1, 1, 8, 8).float()
+            shapes = x[:, 64:139].float()
+            l_feat = self.local_conv(board)
+            g_feat = self.global_conv(board)
+            r_feat = self.row_conv(board)
+            c_feat = self.col_conv(board)
+            features = torch.cat([l_feat, g_feat, r_feat, c_feat, shapes], dim=1)
+        else:
+            features = x.float()
+            
+        hidden = self.fc(features)
+        
+        if self.lstm_hidden > 0:
+            if hidden.dim() == 2:
+                hidden = hidden.unsqueeze(0)
+                hidden, lstm_state = self.lstm(hidden, lstm_state)
+                hidden = hidden.squeeze(0)
+            else:
+                hidden, lstm_state = self.lstm(hidden, lstm_state)
+        
+        return hidden, lstm_state
 
-    def get_value(self, x):
-        return self.critic(self._get_hidden(x))
+    def get_value(self, x, lstm_state=None):
+        hidden, _ = self._get_hidden(x, lstm_state)
+        return self.critic(hidden)
 
-    def get_action_and_value(self, x, action=None, mask=None):
-        hidden = self._get_hidden(x)
+    def get_action_and_value(self, x, action=None, mask=None, lstm_state=None):
+        hidden, next_lstm_state = self._get_hidden(x, lstm_state)
         logits = self.actor(hidden)
         if mask is not None:
             logits = logits + (mask == 0) * -1e9
         probs = Categorical(logits=logits)
         if action is None:
             action = probs.sample()
-        return action, probs.log_prob(action), probs.entropy(), self.critic(hidden)
+        return action, probs.log_prob(action), probs.entropy(), self.critic(hidden), next_lstm_state
 
 def make_env(**kwargs):
     return pufferlib.emulation.GymnasiumPufferEnv(
@@ -90,16 +119,24 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--checkpoint", type=str, default=None, help="Path to a checkpoint to load")
     parser.add_argument("--run-name", type=str, default=None, help="The name of the run (for TensorBoard)")
-    parser.add_argument("--total-timesteps", type=int, default=1_000_000_000, help="Total timesteps (default: 1B for 'forever')")
+    parser.add_argument("--total-timesteps", type=int, default=1_000_000_000, help="Total timesteps")
     parser.add_argument("--no-tensorboard", action="store_true", help="Don't launch tensorboard")
     parser.add_argument("--start-update", type=int, default=None, help="Manually set the starting update number")
+    
+    # Architecture arguments
+    parser.add_argument("--arch", type=str, default="cnn", choices=["cnn", "mlp"], help="Architecture type")
+    parser.add_argument("--fc-layers", type=int, nargs="+", default=[512, 512, 256], help="FC layer dimensions")
+    parser.add_argument("--cnn-channels", type=int, nargs=2, default=[32, 64], help="CNN channels")
+    parser.add_argument("--lstm", type=int, default=0, help="LSTM hidden size (0 to disable)")
+    parser.add_argument("--lr", type=float, default=3e-4, help="Learning rate")
+
     args = parser.parse_args()
 
     # PPO CONFIGURATION
     num_envs = 128 
     num_steps = 256 
     total_timesteps = args.total_timesteps
-    learning_rate = 3e-4 # More stable for PPO
+    learning_rate = args.lr
     anneal_lr = True
     gamma = 0.99
     gae_lambda = 0.95
@@ -118,53 +155,36 @@ def main():
     print(f"Starting PPO training on {device}...")
     
     envs = pufferlib.vector.make(make_env, num_envs=num_envs, backend=pufferlib.vector.Serial)
-    agent = ChampionAgent().to(device)
+    agent = FlexibleAgent(
+        arch_type=args.arch, 
+        cnn_channels=args.cnn_channels, 
+        fc_layers=args.fc_layers, 
+        lstm_hidden=args.lstm
+    ).to(device)
     
-    start_update = 1
-    global_step = 0
+    # Generate run_name if not provided
+    if not args.run_name:
+        fc_str = "x".join(map(str, args.fc_layers))
+        cnn_str = f"C{args.cnn_channels[0]}x{args.cnn_channels[1]}" if args.arch == "cnn" else ""
+        lstm_str = f"_LSTM{args.lstm}" if args.lstm > 0 else ""
+        args.run_name = f"{args.arch.upper()}_{cnn_str}_FC{fc_str}{lstm_str}_LR{args.lr}_{int(time.time())}"
     
-    if args.checkpoint:
-        if os.path.exists(args.checkpoint):
-            checkpoint = torch.load(args.checkpoint, map_location=device)
-            # Handle both old (state_dict only) and new (dict with metadata) checkpoints
-            if isinstance(checkpoint, dict) and "agent_state_dict" in checkpoint:
-                agent.load_state_dict(checkpoint["agent_state_dict"])
-                start_update = checkpoint.get("update", 0) + 1
-                global_step = checkpoint.get("global_step", 0)
-                print(f"Loaded checkpoint: {args.checkpoint} (Resuming from update {start_update})")
-            else:
-                agent.load_state_dict(checkpoint)
-                # Try to guess update from filename: e.g. update_150.pt
-                import re
-                match = re.search(r"update_(\d+)", os.path.basename(args.checkpoint))
-                if match:
-                    start_update = int(match.group(1)) + 1
-                    global_step = (start_update - 1) * batch_size
-                    print(f"Loaded checkpoint: {args.checkpoint} (Legacy format, guessed update {start_update})")
-                else:
-                    print(f"Loaded checkpoint: {args.checkpoint} (Legacy format)")
-        else:
-            print(f"Error: Checkpoint {args.checkpoint} not found.")
-            return
-
-    # Manually override if provided
-    if args.start_update is not None:
-        start_update = args.start_update
-        global_step = (start_update - 1) * batch_size
-        print(f"Manually overriding starting update to {start_update}")
-
-    optimizer = optim.Adam(agent.parameters(), lr=learning_rate, eps=1e-5)
+    run_name = args.run_name
+    checkpoint_dir = f"checkpoints/{run_name}"
+    os.makedirs(checkpoint_dir, exist_ok=True)
     
-    # Restore optimizer state if it exists in the checkpoint
-    if args.checkpoint and os.path.exists(args.checkpoint):
-        # We already loaded the file once, but need the dict for optimizer too
-        checkpoint = torch.load(args.checkpoint, map_location=device)
-        if isinstance(checkpoint, dict) and "optimizer_state_dict" in checkpoint:
-            optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
-            print(f"Loaded optimizer state from {args.checkpoint}")
-    
-    # Use existing run_name if provided to continue TensorBoard logs
-    run_name = args.run_name if args.run_name else f"PPO_MARATHON_{int(time.time())}"
+    # Save config for play.py to use automatically
+    import json
+    config = {
+        "arch": args.arch,
+        "fc_layers": args.fc_layers,
+        "cnn_channels": args.cnn_channels,
+        "lstm": args.lstm,
+        "lr": args.lr
+    }
+    with open(os.path.join(checkpoint_dir, "config.json"), "w") as f:
+        json.dump(config, f, indent=4)
+        
     writer = SummaryWriter(f"runs/{run_name}")
     
     if not args.no_tensorboard:
@@ -189,6 +209,44 @@ def main():
     next_obs = torch.Tensor(next_obs).to(device)
     next_done = torch.zeros(num_envs).to(device)
     
+    start_update = 1
+    global_step = 0
+    
+    if args.checkpoint:
+        if os.path.exists(args.checkpoint):
+            checkpoint = torch.load(args.checkpoint, map_location=device)
+            if isinstance(checkpoint, dict) and "agent_state_dict" in checkpoint:
+                agent.load_state_dict(checkpoint["agent_state_dict"])
+                start_update = checkpoint.get("update", 0) + 1
+                global_step = checkpoint.get("global_step", 0)
+                print(f"Loaded checkpoint: {args.checkpoint} (Resuming from update {start_update})")
+            else:
+                agent.load_state_dict(checkpoint)
+                import re
+                match = re.search(r"update_(\d+)", os.path.basename(args.checkpoint))
+                if match:
+                    start_update = int(match.group(1)) + 1
+                    global_step = (start_update - 1) * batch_size
+                    print(f"Loaded checkpoint: {args.checkpoint} (Legacy format, guessed update {start_update})")
+                else:
+                    print(f"Loaded checkpoint: {args.checkpoint} (Legacy format)")
+        else:
+            print(f"Error: Checkpoint {args.checkpoint} not found.")
+            return
+
+    if args.start_update is not None:
+        start_update = args.start_update
+        global_step = (start_update - 1) * batch_size
+        print(f"Manually overriding starting update to {start_update}")
+
+    optimizer = optim.Adam(agent.parameters(), lr=learning_rate, eps=1e-5)
+    
+    if args.checkpoint and os.path.exists(args.checkpoint):
+        checkpoint = torch.load(args.checkpoint, map_location=device)
+        if isinstance(checkpoint, dict) and "optimizer_state_dict" in checkpoint:
+            optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
+            print(f"Loaded optimizer state from {args.checkpoint}")
+
     total_episodes = 0
     start_time = time.time()
     num_updates = total_timesteps // batch_size
@@ -210,7 +268,7 @@ def main():
             current_obs = next_obs[:, mask_size : mask_size + obs_size]
 
             with torch.no_grad():
-                action, logprob, _, value = agent.get_action_and_value(current_obs, mask=current_mask)
+                action, logprob, _, value, _ = agent.get_action_and_value(current_obs, mask=current_mask)
                 values_buffer[step] = value.flatten()
             
             actions_buffer[step] = action
@@ -259,7 +317,7 @@ def main():
                 end = start + minibatch_size
                 mb_inds = b_inds[start:end]
 
-                _, newlogprob, entropy, newvalue = agent.get_action_and_value(
+                _, newlogprob, entropy, newvalue, _ = agent.get_action_and_value(
                     b_current_obs[mb_inds], 
                     b_actions.long()[mb_inds], 
                     mask=b_current_mask[mb_inds]
