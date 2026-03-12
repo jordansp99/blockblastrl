@@ -169,6 +169,7 @@ def train(trial):
     minibatch_size = int(batch_size // num_minibatches)
     
     recent_rewards = []
+    start_time = time.time()
 
     for update in range(1, total_updates + 1):
         # Buffer initialization for each update to avoid stale data
@@ -262,7 +263,9 @@ def train(trial):
             
         # Logging to TensorBoard
         global_step = update * batch_size
+        sps = int(global_step / (time.time() - start_time))
         writer.add_scalar("charts/avg_reward", avg_reward, global_step)
+        writer.add_scalar("charts/SPS", sps, global_step)
         writer.add_scalar("losses/policy_loss", pg_loss.item(), global_step)
         writer.add_scalar("losses/value_loss", v_loss.item(), global_step)
         writer.add_scalar("losses/entropy", entropy.mean().item(), global_step)
