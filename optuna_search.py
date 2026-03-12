@@ -155,9 +155,9 @@ def train(trial):
             trial.suggest_categorical("cnn_c2", [32, 64])
         ]
 
-    num_envs = 32
-    num_steps = 128
-    total_updates = 600 # ~2.5 million steps
+    num_envs = 128
+    num_steps = 256
+    total_updates = 100 # ~3.3 million steps (128 * 256 * 100 = 3,276,800)
     
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     
