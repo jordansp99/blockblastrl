@@ -16,51 +16,64 @@ class FlexibleAgent(nn.Module):
     def __init__(self, obs_size=139, action_size=192, 
                  arch_type="cnn", 
                  cnn_channels=[32, 64], 
-                 fc_layers=[512, 256],
-                 lstm_hidden=0):
+                 fc_layers=[512, 512, 256],
+                 lstm_hidden=0,
+                 transformer_layers=0,
+                 transformer_heads=4,
+                 activation="relu"):
         super().__init__()
         self.arch_type = arch_type
         self.lstm_hidden = lstm_hidden
+        self.transformer_layers = transformer_layers
         self.obs_size = obs_size
         
+        act_fn = nn.ReLU if activation == "relu" else nn.GELU
+        
         if arch_type == "cnn":
-            # Current Champion Architecture
             self.local_conv = nn.Sequential(
                 nn.Conv2d(1, cnn_channels[0], kernel_size=3, padding=1),
-                nn.ReLU(),
+                act_fn(),
                 nn.Conv2d(cnn_channels[0], cnn_channels[1], kernel_size=3, padding=1),
-                nn.ReLU(),
+                act_fn(),
                 nn.Flatten()
             )
             self.global_conv = nn.Sequential(
                 nn.Conv2d(1, 32, kernel_size=8),
-                nn.ReLU(),
+                act_fn(),
                 nn.Flatten()
             )
             self.row_conv = nn.Sequential(
                 nn.Conv2d(1, 16, kernel_size=(1, 8)),
-                nn.ReLU(),
+                act_fn(),
                 nn.Flatten()
             )
             self.col_conv = nn.Sequential(
                 nn.Conv2d(1, 16, kernel_size=(8, 1)),
-                nn.ReLU(),
+                act_fn(),
                 nn.Flatten()
             )
-            # 64*8*8 + 32 + 128 + 128 + 75 = 4459 (if channels are 32, 64)
             self.input_dim = cnn_channels[1] * 64 + 32 + 128 + 128 + 75
-        elif arch_type == "mlp":
+        else:
             self.input_dim = obs_size
         
         layers = []
         last_dim = self.input_dim
         for hidden in fc_layers:
             layers.append(nn.Linear(last_dim, hidden))
-            layers.append(nn.ReLU())
+            layers.append(act_fn())
             last_dim = hidden
         
         self.fc = nn.Sequential(*layers)
         
+        if transformer_layers > 0:
+            encoder_layer = nn.TransformerEncoderLayer(
+                d_model=last_dim, 
+                nhead=transformer_heads, 
+                dim_feedforward=last_dim*2,
+                batch_first=True
+            )
+            self.transformer = nn.TransformerEncoder(encoder_layer, num_layers=transformer_layers)
+
         if lstm_hidden > 0:
             self.lstm = nn.LSTM(last_dim, lstm_hidden)
             last_dim = lstm_hidden
@@ -81,16 +94,18 @@ class FlexibleAgent(nn.Module):
             features = x.float()
             
         hidden = self.fc(features)
+
+        if self.transformer_layers > 0:
+            hidden = hidden.unsqueeze(1) # (B, 1, D)
+            hidden = self.transformer(hidden)
+            hidden = hidden.squeeze(1)
         
         if self.lstm_hidden > 0:
-            # For simplicity in this search, we handle single-step LSTM if no sequence dim
-            # This is NOT efficient for training but works for testing architectures
             if hidden.dim() == 2:
-                hidden = hidden.unsqueeze(0) # (1, B, D)
+                hidden = hidden.unsqueeze(0)
                 hidden, lstm_state = self.lstm(hidden, lstm_state)
                 hidden = hidden.squeeze(0)
             else:
-                # (S, B, D)
                 hidden, lstm_state = self.lstm(hidden, lstm_state)
         
         return hidden, lstm_state
@@ -117,24 +132,32 @@ def make_env(**kwargs):
 
 def train(trial):
     # Hyperparameters to tune
-    lr = trial.suggest_float("lr", 1e-4, 5e-4, log=True)
+    lr = trial.suggest_float("lr", 5e-5, 5e-4, log=True)
+    ent_coef = trial.suggest_float("ent_coef", 0.001, 0.05, log=True)
+    activation = trial.suggest_categorical("activation", ["relu", "gelu"])
     arch_type = trial.suggest_categorical("arch_type", ["cnn", "mlp"])
+    
     num_fc = trial.suggest_int("num_fc", 1, 3)
-    fc_dim = trial.suggest_categorical("fc_dim", [128, 256, 512])
+    fc_dim = trial.suggest_categorical("fc_dim", [256, 512])
     fc_layers = [fc_dim] * num_fc
     
     use_lstm = trial.suggest_categorical("use_lstm", [True, False])
     lstm_hidden = trial.suggest_categorical("lstm_hidden", [64, 128]) if use_lstm else 0
     
+    use_transformer = trial.suggest_categorical("use_transformer", [True, False])
+    transformer_layers = trial.suggest_int("transformer_layers", 1, 2) if use_transformer else 0
+    transformer_heads = trial.suggest_categorical("transformer_heads", [4, 8]) if use_transformer else 4
+    
     cnn_channels = [32, 64]
     if arch_type == "cnn":
-        c1 = trial.suggest_categorical("cnn_c1", [16, 32])
-        c2 = trial.suggest_categorical("cnn_c2", [32, 64])
-        cnn_channels = [c1, c2]
+        cnn_channels = [
+            trial.suggest_categorical("cnn_c1", [16, 32]),
+            trial.suggest_categorical("cnn_c2", [32, 64])
+        ]
 
-    num_envs = 32 # Small for fast iteration
+    num_envs = 32
     num_steps = 128
-    total_updates = 600 # ~2.5 million steps (32 * 128 * 600 = 2,457,600)
+    total_updates = 600 # ~2.5 million steps
     
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     
@@ -142,11 +165,20 @@ def train(trial):
     fc_str = "x".join(map(str, fc_layers))
     cnn_str = f"C{cnn_channels[0]}x{cnn_channels[1]}" if arch_type == "cnn" else ""
     lstm_str = f"_LSTM{lstm_hidden}" if lstm_hidden > 0 else ""
-    trial_run_name = f"Trial{trial.number}_{arch_type.upper()}_{cnn_str}_FC{fc_str}{lstm_str}_LR{lr:.5f}"
+    trans_str = f"_T{transformer_layers}" if transformer_layers > 0 else ""
+    trial_run_name = f"Trial{trial.number}_{arch_type.upper()}_{cnn_str}_FC{fc_str}{lstm_str}{trans_str}_{activation.upper()}_LR{lr:.5f}"
     writer = SummaryWriter(f"runs/optuna/{trial_run_name}")
 
     envs = pufferlib.vector.make(make_env, num_envs=num_envs, backend=pufferlib.vector.Serial)
-    agent = FlexibleAgent(arch_type=arch_type, cnn_channels=cnn_channels, fc_layers=fc_layers, lstm_hidden=lstm_hidden).to(device)
+    agent = FlexibleAgent(
+        arch_type=arch_type, 
+        cnn_channels=cnn_channels, 
+        fc_layers=fc_layers, 
+        lstm_hidden=lstm_hidden,
+        transformer_layers=transformer_layers,
+        transformer_heads=transformer_heads,
+        activation=activation
+    ).to(device)
     optimizer = optim.Adam(agent.parameters(), lr=lr, eps=1e-5)
     
     obs_size, mask_size = 139, 192
@@ -161,7 +193,6 @@ def train(trial):
     num_minibatches = 4
     update_epochs = 4
     clip_coef = 0.2
-    ent_coef = 0.01
     vf_coef = 0.5
     max_grad_norm = 0.5
     
@@ -172,7 +203,6 @@ def train(trial):
     start_time = time.time()
 
     for update in range(1, total_updates + 1):
-        # Buffer initialization for each update to avoid stale data
         obs_buffer = torch.zeros((num_steps, num_envs) + obs_shape).to(device)
         actions_buffer = torch.zeros((num_steps, num_envs)).to(device)
         logprobs_buffer = torch.zeros((num_steps, num_envs)).to(device)
@@ -183,7 +213,6 @@ def train(trial):
         for step in range(0, num_steps):
             obs_buffer[step] = next_obs
             dones_buffer[step] = next_done
-            
             current_mask = next_obs[:, :mask_size]
             current_obs = next_obs[:, mask_size : mask_size + obs_size]
 
@@ -193,13 +222,11 @@ def train(trial):
             
             actions_buffer[step] = action
             logprobs_buffer[step] = logprob
-            
             next_obs, reward, terminated, truncated, _ = envs.step(action.cpu().numpy())
             next_done = torch.logical_or(torch.Tensor(terminated), torch.Tensor(truncated)).to(device)
             next_obs = torch.Tensor(next_obs).to(device)
             rewards_buffer[step] = torch.tensor(reward).to(device)
 
-        # GAE calculation
         with torch.no_grad():
             next_obs_actual = next_obs[:, mask_size : mask_size + obs_size]
             next_value = agent.get_value(next_obs_actual).reshape(1, -1)
@@ -216,13 +243,11 @@ def train(trial):
                 advantages[t] = lastgaelam = delta + gamma * gae_lambda * nextnonterminal * lastgaelam
             returns = advantages + values_buffer
 
-        # Optimize
         b_obs = obs_buffer.reshape((-1,) + obs_shape)
         b_logprobs = logprobs_buffer.reshape(-1)
         b_actions = actions_buffer.reshape(-1)
         b_advantages = advantages.reshape(-1)
         b_returns = returns.reshape(-1)
-        
         b_current_obs = b_obs[:, mask_size : mask_size + obs_size]
         b_current_mask = b_obs[:, :mask_size]
 
@@ -261,7 +286,6 @@ def train(trial):
         if len(recent_rewards) > 10:
             recent_rewards.pop(0)
             
-        # Logging to TensorBoard
         global_step = update * batch_size
         sps = int(global_step / (time.time() - start_time))
         writer.add_scalar("charts/avg_reward", avg_reward, global_step)
@@ -282,12 +306,11 @@ def train(trial):
 
 if __name__ == "__main__":
     study = optuna.create_study(direction="maximize")
-    study.optimize(train, n_trials=10) # 10 trials for a quick look
+    study.optimize(train, n_trials=10)
     
     print("Best Params:", study.best_params)
     print("Best Value:", study.best_value)
 
-    # Launch full training with best parameters
     print("\n" + "="*50)
     print("STARTING FULL TRAINING WITH BEST PARAMETERS")
     print("="*50)
@@ -299,14 +322,19 @@ if __name__ == "__main__":
         "python", "train.py",
         "--arch", str(best["arch_type"]),
         "--lr", str(best["lr"]),
+        "--ent-coef", str(best["ent_coef"]),
+        "--activation", str(best["activation"]),
         "--fc-layers"
     ] + [str(best["fc_dim"])] * best["num_fc"]
     
     if best["arch_type"] == "cnn":
         cmd += ["--cnn-channels", str(best["cnn_c1"]), str(best["cnn_c2"])]
     
-    if "use_lstm" in best and best["use_lstm"]:
+    if best["use_lstm"]:
         cmd += ["--lstm", str(best["lstm_hidden"])]
+        
+    if best["use_transformer"]:
+        cmd += ["--transformer-layers", str(best["transformer_layers"]), "--transformer-heads", str(best["transformer_heads"])]
         
     print(f"Running: {' '.join(cmd)}")
     subprocess.run(cmd)

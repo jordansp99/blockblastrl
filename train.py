@@ -22,33 +22,39 @@ class FlexibleAgent(nn.Module):
                  arch_type="cnn", 
                  cnn_channels=[32, 64], 
                  fc_layers=[512, 512, 256],
-                 lstm_hidden=0):
+                 lstm_hidden=0,
+                 transformer_layers=0,
+                 transformer_heads=4,
+                 activation="relu"):
         super().__init__()
         self.arch_type = arch_type
         self.lstm_hidden = lstm_hidden
+        self.transformer_layers = transformer_layers
         self.obs_size = obs_size
+        
+        act_fn = nn.ReLU if activation == "relu" else nn.GELU
         
         if arch_type == "cnn":
             self.local_conv = nn.Sequential(
                 nn.Conv2d(1, cnn_channels[0], kernel_size=3, padding=1),
-                nn.ReLU(),
+                act_fn(),
                 nn.Conv2d(cnn_channels[0], cnn_channels[1], kernel_size=3, padding=1),
-                nn.ReLU(),
+                act_fn(),
                 nn.Flatten()
             )
             self.global_conv = nn.Sequential(
                 nn.Conv2d(1, 32, kernel_size=8),
-                nn.ReLU(),
+                act_fn(),
                 nn.Flatten()
             )
             self.row_conv = nn.Sequential(
                 nn.Conv2d(1, 16, kernel_size=(1, 8)),
-                nn.ReLU(),
+                act_fn(),
                 nn.Flatten()
             )
             self.col_conv = nn.Sequential(
                 nn.Conv2d(1, 16, kernel_size=(8, 1)),
-                nn.ReLU(),
+                act_fn(),
                 nn.Flatten()
             )
             self.input_dim = cnn_channels[1] * 64 + 32 + 128 + 128 + 75
@@ -59,11 +65,22 @@ class FlexibleAgent(nn.Module):
         last_dim = self.input_dim
         for hidden in fc_layers:
             layers.append(nn.Linear(last_dim, hidden))
-            layers.append(nn.ReLU())
+            layers.append(act_fn())
             last_dim = hidden
         
         self.fc = nn.Sequential(*layers)
         
+        if transformer_layers > 0:
+            # We treat the hidden features as a sequence of tokens for the transformer
+            # For simplicity, we use the last FC dimension as d_model
+            encoder_layer = nn.TransformerEncoderLayer(
+                d_model=last_dim, 
+                nhead=transformer_heads, 
+                dim_feedforward=last_dim*2,
+                batch_first=True
+            )
+            self.transformer = nn.TransformerEncoder(encoder_layer, num_layers=transformer_layers)
+
         if lstm_hidden > 0:
             self.lstm = nn.LSTM(last_dim, lstm_hidden)
             last_dim = lstm_hidden
@@ -84,6 +101,14 @@ class FlexibleAgent(nn.Module):
             features = x.float()
             
         hidden = self.fc(features)
+
+        if self.transformer_layers > 0:
+            # Transformer expects (Batch, Seq, Feature). 
+            # We'll treat the hidden vector as a single token or split it?
+            # Let's treat it as a sequence of 4 tokens if possible, or just 1 global token.
+            hidden = hidden.unsqueeze(1) # (B, 1, D)
+            hidden = self.transformer(hidden)
+            hidden = hidden.squeeze(1)
         
         if self.lstm_hidden > 0:
             if hidden.dim() == 2:
@@ -128,6 +153,10 @@ def main():
     parser.add_argument("--fc-layers", type=int, nargs="+", default=[512, 512, 256], help="FC layer dimensions")
     parser.add_argument("--cnn-channels", type=int, nargs=2, default=[32, 64], help="CNN channels")
     parser.add_argument("--lstm", type=int, default=0, help="LSTM hidden size (0 to disable)")
+    parser.add_argument("--transformer-layers", type=int, default=0, help="Transformer encoder layers")
+    parser.add_argument("--transformer-heads", type=int, default=4, help="Transformer attention heads")
+    parser.add_argument("--activation", type=str, default="relu", choices=["relu", "gelu"], help="Activation function")
+    parser.add_argument("--ent-coef", type=float, default=0.01, help="Entropy coefficient for PPO")
     parser.add_argument("--lr", type=float, default=3e-4, help="Learning rate")
 
     args = parser.parse_args()
@@ -144,7 +173,7 @@ def main():
     update_epochs = 4
     norm_adv = True
     clip_coef = 0.2
-    ent_coef = 0.01
+    ent_coef = args.ent_coef
     vf_coef = 0.5
     max_grad_norm = 0.5
     
@@ -159,7 +188,10 @@ def main():
         arch_type=args.arch, 
         cnn_channels=args.cnn_channels, 
         fc_layers=args.fc_layers, 
-        lstm_hidden=args.lstm
+        lstm_hidden=args.lstm,
+        transformer_layers=args.transformer_layers,
+        transformer_heads=args.transformer_heads,
+        activation=args.activation
     ).to(device)
     
     # Generate run_name if not provided
@@ -167,7 +199,9 @@ def main():
         fc_str = "x".join(map(str, args.fc_layers))
         cnn_str = f"C{args.cnn_channels[0]}x{args.cnn_channels[1]}" if args.arch == "cnn" else ""
         lstm_str = f"_LSTM{args.lstm}" if args.lstm > 0 else ""
-        args.run_name = f"{args.arch.upper()}_{cnn_str}_FC{fc_str}{lstm_str}_LR{args.lr}_{int(time.time())}"
+        trans_str = f"_T{args.transformer_layers}H{args.transformer_heads}" if args.transformer_layers > 0 else ""
+        act_str = f"_{args.activation.upper()}"
+        args.run_name = f"{args.arch.upper()}_{cnn_str}_FC{fc_str}{lstm_str}{trans_str}{act_str}_E{args.ent_coef}_LR{args.lr}_{int(time.time())}"
     
     run_name = args.run_name
     checkpoint_dir = f"checkpoints/{run_name}"
@@ -180,6 +214,10 @@ def main():
         "fc_layers": args.fc_layers,
         "cnn_channels": args.cnn_channels,
         "lstm": args.lstm,
+        "transformer_layers": args.transformer_layers,
+        "transformer_heads": args.transformer_heads,
+        "activation": args.activation,
+        "ent_coef": args.ent_coef,
         "lr": args.lr
     }
     with open(os.path.join(checkpoint_dir, "config.json"), "w") as f:
