@@ -107,8 +107,21 @@ def main():
     agent = Agent(obs_size, action_size, arch=arch).to(device)
     
     if os.path.exists(checkpoint_path):
-        agent.load_state_dict(torch.load(checkpoint_path, map_location=device))
-        print(f"Loaded checkpoint: {checkpoint_path}")
+        checkpoint = torch.load(checkpoint_path, map_location=device)
+        if isinstance(checkpoint, dict) and "model_state_dict" in checkpoint:
+            # Handle the new resumeable checkpoint format
+            state_dict = checkpoint["model_state_dict"]
+            # Remove '_orig_mod.' prefix if it was saved from a compiled model
+            new_state_dict = {}
+            for k, v in state_dict.items():
+                name = k[10:] if k.startswith('_orig_mod.') else k
+                new_state_dict[name] = v
+            agent.load_state_dict(new_state_dict)
+            print(f"Resumed from checkpoint: {checkpoint_path} (Update {checkpoint['update']})")
+        else:
+            # Legacy support for weights-only checkpoints
+            agent.load_state_dict(checkpoint)
+            print(f"Loaded weights from checkpoint: {checkpoint_path}")
     else:
         print(f"Error: Checkpoint {checkpoint_path} not found.")
         sys.exit(1)
@@ -119,14 +132,16 @@ def main():
     
     print("AI is now playing (Slow Speed)...")
     
+    mask_size, obs_size = 192, 139
+    
     while not done:
-        # Correct Alphabetical Slicing: [mask (192), obs (139)]
-        obs_flat = obs.flatten()
-        tensor_mask = torch.Tensor(obs_flat[:192]).unsqueeze(0).to(device)
-        tensor_obs = torch.Tensor(obs_flat[192 : 192 + 139]).unsqueeze(0).to(device)
+        # Alphabetical Slicing: [mask (192), obs (139)]
+        obs_flat = torch.Tensor(obs.flatten()).to(device)
+        current_mask = obs_flat[:mask_size].unsqueeze(0)
+        current_obs = obs_flat[mask_size : mask_size + obs_size].unsqueeze(0)
         
         with torch.no_grad():
-            action = agent.get_action(tensor_obs, mask=tensor_mask)
+            action = agent.get_action(current_obs, mask=current_mask)
             
         obs, reward, terminated, truncated, info = puffer_env.step(action)
         done = terminated or truncated
