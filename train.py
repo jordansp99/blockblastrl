@@ -20,8 +20,8 @@ from torch.utils.tensorboard import SummaryWriter
 class FlexibleAgent(nn.Module):
     def __init__(self, obs_size=139, action_size=192, 
                  arch_type="cnn", 
-                 cnn_channels=[32, 64], 
-                 fc_layers=[512, 512, 256],
+                 cnn_channels=[16, 32], 
+                 fc_layers=[256, 256, 256],
                  lstm_hidden=0,
                  transformer_layers=0,
                  transformer_heads=4,
@@ -71,8 +71,6 @@ class FlexibleAgent(nn.Module):
         self.fc = nn.Sequential(*layers)
         
         if transformer_layers > 0:
-            # We treat the hidden features as a sequence of tokens for the transformer
-            # For simplicity, we use the last FC dimension as d_model
             encoder_layer = nn.TransformerEncoderLayer(
                 d_model=last_dim, 
                 nhead=transformer_heads, 
@@ -103,9 +101,6 @@ class FlexibleAgent(nn.Module):
         hidden = self.fc(features)
 
         if self.transformer_layers > 0:
-            # Transformer expects (Batch, Seq, Feature). 
-            # We'll treat the hidden vector as a single token or split it?
-            # Let's treat it as a sequence of 4 tokens if possible, or just 1 global token.
             hidden = hidden.unsqueeze(1) # (B, 1, D)
             hidden = self.transformer(hidden)
             hidden = hidden.squeeze(1)
@@ -156,7 +151,7 @@ def main():
     parser.add_argument("--transformer-layers", type=int, default=0, help="Transformer encoder layers")
     parser.add_argument("--transformer-heads", type=int, default=4, help="Transformer attention heads")
     parser.add_argument("--activation", type=str, default="relu", choices=["relu", "gelu"], help="Activation function")
-    parser.add_argument("--ent-coef", type=float, default=0.00895357273417024, help="Entropy coefficient for PPO")
+    parser.add_argument("--ent-coef", type=float, default=0.02, help="Starting entropy coefficient")
     parser.add_argument("--gamma", type=float, default=0.99, help="Discount factor gamma")
     parser.add_argument("--lr", type=float, default=0.0004981024654599184, help="Learning rate")
 
@@ -176,7 +171,7 @@ def main():
     clip_coef = 0.2
     ent_coef = args.ent_coef
     vf_coef = 0.5
-    max_grad_norm = 0.5
+    max_grad_norm = 1.0 # Increased for more robust updates
     
     batch_size = int(num_envs * num_steps)
     minibatch_size = int(batch_size // num_minibatches)
@@ -294,7 +289,6 @@ def main():
     episode_rewards = np.zeros(num_envs)
     episode_lengths = np.zeros(num_envs)
     
-    # Track recent stats for console printing
     recent_returns = []
     recent_lengths = []
     recent_lines = []
@@ -303,15 +297,20 @@ def main():
     num_updates = total_timesteps // batch_size
     
     for update in itertools.count(start_update):
-        # ...
-        # ... (LR annealing logic) ...
+        # ANNEALING
+        frac = 1.0 - (update - 1.0) / num_updates
+        if anneal_lr:
+            lrnow = max(frac * learning_rate, 0.0)
+            optimizer.param_groups[0]["lr"] = lrnow
+        
+        # Slower entropy decay
+        current_ent_coef = ent_coef * max(0.2, frac)
 
         for step in range(0, num_steps):
             global_step += num_envs
             obs_buffer[step] = next_obs
             dones_buffer[step] = next_done
             
-            # Alphabetical Slicing: [mask (192), obs (139)]
             current_mask = next_obs[:, :mask_size]
             current_obs = next_obs[:, mask_size : mask_size + obs_size]
 
@@ -324,24 +323,18 @@ def main():
 
             next_obs, reward, terminated, truncated, infos = envs.step(action.cpu().numpy())
             
-            # Add step-level line logging for immediate feedback
             if "lines_cleared" in infos:
                 writer.add_scalar("charts/lines_cleared_step", np.mean(infos["lines_cleared"]), global_step)
             
-            # TRACK UNIVERSAL METRICS
             episode_rewards += reward
             episode_lengths += 1
             
             for i, d in enumerate(torch.logical_or(torch.Tensor(terminated), torch.Tensor(truncated))):
                 if d:
-                    # Log basics
                     writer.add_scalar("charts/episodic_return", episode_rewards[i], global_step)
                     writer.add_scalar("charts/episodic_length", episode_lengths[i], global_step)
-                    
                     recent_returns.append(episode_rewards[i])
                     recent_lengths.append(episode_lengths[i])
-                    
-                    # Log lines cleared (Universal metric)
                     if "lines_cleared" in infos:
                         line_val = infos["lines_cleared"][i]
                         writer.add_scalar("charts/total_lines_cleared", line_val, global_step)
@@ -353,11 +346,9 @@ def main():
                             writer.add_scalar("charts/total_lines_cleared", line_val, global_step)
                             recent_lines.append(line_val)
 
-                    # Keep only last 100 episodes for console averaging
                     if len(recent_returns) > 100: recent_returns.pop(0)
                     if len(recent_lengths) > 100: recent_lengths.pop(0)
                     if len(recent_lines) > 100: recent_lines.pop(0)
-
                     episode_rewards[i] = 0
                     episode_lengths[i] = 0
                     total_episodes += 1
@@ -366,7 +357,6 @@ def main():
             next_obs = torch.Tensor(next_obs).to(device)
             rewards_buffer[step] = torch.tensor(reward).to(device)
 
-        # bootstrap value if not done
         with torch.no_grad():
             next_obs_actual = next_obs[:, mask_size : mask_size + obs_size]
             next_value = agent.get_value(next_obs_actual).reshape(1, -1)
@@ -383,18 +373,15 @@ def main():
                 advantages[t] = lastgaelam = delta + gamma * gae_lambda * nextnonterminal * lastgaelam
             returns = advantages + values_buffer
 
-        # flatten the batch
         b_obs = obs_buffer.reshape((-1,) + obs_shape)
         b_logprobs = logprobs_buffer.reshape(-1)
         b_actions = actions_buffer.reshape((-1,) + envs.single_action_space.shape)
         b_advantages = advantages.reshape(-1)
         b_returns = returns.reshape(-1)
         b_values = values_buffer.reshape(-1)
-        
         b_current_obs = b_obs[:, mask_size : mask_size + obs_size]
         b_current_mask = b_obs[:, :mask_size]
 
-        # Optimizing the policy and value network
         b_inds = np.arange(batch_size)
         clipfracs = []
         for epoch in range(update_epochs):
@@ -412,8 +399,6 @@ def main():
                 ratio = logratio.exp()
 
                 with torch.no_grad():
-                    # calculate approx_kl http://joschu.net/blog/kl-approx.html
-                    old_approx_kl = (-logratio).mean()
                     approx_kl = ((ratio - 1) - logratio).mean()
                     clipfracs += [((ratio - 1.0).abs() > clip_coef).float().mean().item()]
 
@@ -421,17 +406,16 @@ def main():
                 if norm_adv:
                     mb_advantages = (mb_advantages - mb_advantages.mean()) / (mb_advantages.std() + 1e-8)
 
-                # Policy loss
                 pg_loss1 = -mb_advantages * ratio
                 pg_loss2 = -mb_advantages * torch.clamp(ratio, 1 - clip_coef, 1 + clip_coef)
                 pg_loss = torch.max(pg_loss1, pg_loss2).mean()
 
-                # Value loss
                 newvalue = newvalue.view(-1)
                 v_loss = 0.5 * ((newvalue - b_returns[mb_inds]) ** 2).mean()
-
                 entropy_loss = entropy.mean()
-                loss = pg_loss - ent_coef * entropy_loss + v_loss * vf_coef
+                
+                # USE ANNEALED ENTROPY
+                loss = pg_loss - current_ent_coef * entropy_loss + v_loss * vf_coef
 
                 optimizer.zero_grad()
                 loss.backward()
@@ -442,11 +426,8 @@ def main():
         var_y = np.var(y_true)
         explained_var = np.nan if var_y == 0 else 1 - np.var(y_true - y_pred) / var_y
 
-        # Logging
         current_time = time.time() - start_time
         sps = int(global_step / current_time)
-        eps = int(total_episodes / current_time)
-        
         avg_ret = np.mean(recent_returns) if recent_returns else 0
         avg_len = np.mean(recent_lengths) if recent_lengths else 0
         avg_line = np.mean(recent_lines) if recent_lines else 0
@@ -455,12 +436,12 @@ def main():
         print(f"Update {update} | SPS: {sps} | Ret: {avg_ret:.2f} | StepRew: {avg_step_rew:.2f} | Len: {avg_len:.1f} | Lines: {avg_line:.1f} | Ent: {entropy_loss.item():.4f} | KL: {approx_kl.item():.4f}")
         
         writer.add_scalar("charts/learning_rate", optimizer.param_groups[0]["lr"], global_step)
+        writer.add_scalar("charts/ent_coef", current_ent_coef, global_step)
         writer.add_scalar("losses/value_loss", v_loss.item(), global_step)
         writer.add_scalar("losses/policy_loss", pg_loss.item(), global_step)
         writer.add_scalar("losses/entropy", entropy_loss.item(), global_step)
         writer.add_scalar("losses/approx_kl", approx_kl.item(), global_step)
         writer.add_scalar("charts/SPS", sps, global_step)
-        writer.add_scalar("charts/EPS", eps, global_step)
         writer.add_scalar("charts/avg_reward", rewards_buffer.mean().item(), global_step)
 
         if update == 1 or update % 50 == 0:
