@@ -195,14 +195,17 @@ def main():
         activation=args.activation
     ).to(device)
     
-    # Generate run_name if not provided
+    # Generate run_name if not provided, otherwise append timestamp to provided name
+    timestamp = int(time.time())
     if not args.run_name:
         fc_str = "x".join(map(str, args.fc_layers))
         cnn_str = f"C{args.cnn_channels[0]}x{args.cnn_channels[1]}" if args.arch == "cnn" else ""
         lstm_str = f"_LSTM{args.lstm}" if args.lstm > 0 else ""
         trans_str = f"_T{args.transformer_layers}H{args.transformer_heads}" if args.transformer_layers > 0 else ""
         act_str = f"_{args.activation.upper()}"
-        args.run_name = f"{args.arch.upper()}_{cnn_str}_FC{fc_str}{lstm_str}{trans_str}{act_str}_E{args.ent_coef}_LR{args.lr}_{int(time.time())}"
+        args.run_name = f"{args.arch.upper()}_{cnn_str}_FC{fc_str}{lstm_str}{trans_str}{act_str}_E{args.ent_coef}_LR{args.lr}_{timestamp}"
+    else:
+        args.run_name = f"{args.run_name}_{timestamp}"
     
     run_name = args.run_name
     checkpoint_dir = f"checkpoints/{run_name}"
