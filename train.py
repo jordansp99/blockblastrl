@@ -157,6 +157,7 @@ def main():
     parser.add_argument("--transformer-heads", type=int, default=4, help="Transformer attention heads")
     parser.add_argument("--activation", type=str, default="relu", choices=["relu", "gelu"], help="Activation function")
     parser.add_argument("--ent-coef", type=float, default=0.01, help="Entropy coefficient for PPO")
+    parser.add_argument("--gamma", type=float, default=0.99, help="Discount factor gamma")
     parser.add_argument("--lr", type=float, default=3e-4, help="Learning rate")
 
     args = parser.parse_args()
@@ -167,7 +168,7 @@ def main():
     total_timesteps = args.total_timesteps
     learning_rate = args.lr
     anneal_lr = True
-    gamma = 0.99
+    gamma = args.gamma
     gae_lambda = 0.95
     num_minibatches = 4
     update_epochs = 4
@@ -218,6 +219,7 @@ def main():
         "transformer_heads": args.transformer_heads,
         "activation": args.activation,
         "ent_coef": args.ent_coef,
+        "gamma": args.gamma,
         "lr": args.lr
     }
     with open(os.path.join(checkpoint_dir, "config.json"), "w") as f:

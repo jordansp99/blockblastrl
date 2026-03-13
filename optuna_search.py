@@ -134,6 +134,7 @@ def train(trial):
     # Hyperparameters to tune
     lr = trial.suggest_float("lr", 5e-5, 5e-4, log=True)
     ent_coef = trial.suggest_float("ent_coef", 0.001, 0.05, log=True)
+    gamma = trial.suggest_float("gamma", 0.99, 0.999)
     activation = trial.suggest_categorical("activation", ["relu", "gelu"])
     arch_type = trial.suggest_categorical("arch_type", ["cnn", "mlp"])
     
@@ -188,7 +189,6 @@ def train(trial):
     next_obs = torch.Tensor(next_obs).to(device)
     next_done = torch.zeros(num_envs).to(device)
     
-    gamma = 0.99
     gae_lambda = 0.95
     num_minibatches = 4
     update_epochs = 4
@@ -323,6 +323,7 @@ def train(trial):
         "transformer_heads": transformer_heads,
         "activation": activation,
         "ent_coef": ent_coef,
+        "gamma": gamma,
         "lr": lr
     }
     with open(os.path.join(checkpoint_dir, "config.json"), "w") as f:
@@ -344,14 +345,25 @@ if __name__ == "__main__":
     import subprocess
     best = study.best_params
     
-    cmd = [
-        "python", "train.py",
-        "--arch", str(best["arch_type"]),
-        "--lr", str(best["lr"]),
-        "--ent-coef", str(best["ent_coef"]),
-        "--activation", str(best["activation"]),
-        "--fc-layers"
-    ] + [str(best["fc_dim"])] * best["num_fc"]
+        cmd = [
+    
+            "python", "train.py",
+    
+            "--arch", str(best["arch_type"]),
+    
+            "--lr", str(best["lr"]),
+    
+            "--ent-coef", str(best["ent_coef"]),
+    
+            "--gamma", str(best["gamma"]),
+    
+            "--activation", str(best["activation"]),
+    
+            "--fc-layers"
+    
+        ]
+    
+     + [str(best["fc_dim"])] * best["num_fc"]
     
     if best["arch_type"] == "cnn":
         cmd += ["--cnn-channels", str(best["cnn_c1"]), str(best["cnn_c2"])]
