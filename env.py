@@ -75,11 +75,30 @@ class BlockBlastEnv(gymnasium.Env):
         done = c_bool(False)
         self.lib.step_game(self.state_ptr, int(action), byref(reward), byref(done))
         
+        # Access total_lines_cleared from C struct
+        # We need the offset of total_lines_cleared in GameState
+        # Based on: board (64*4), colors (64*4), shapes (3*4), active (3*1+padding), score (4), lines (4)
+        # However, simpler to just define the structure in Python too
+        class GameState(Structure):
+            _fields_ = [
+                ("board", c_int * 64),
+                ("board_colors", c_int * 64),
+                ("current_shapes", c_int * 3),
+                ("shape_active", c_bool * 3),
+                ("score", c_int),
+                ("total_lines_cleared", c_int),
+                ("game_over", c_bool),
+                ("rng_state", c_uint)
+            ]
+        
+        state = GameState.from_address(self.state_ptr)
+        lines = state.total_lines_cleared
+
         if self.render_mode == "human":
             self.render()
 
         obs = self._get_obs()
-        return obs, float(reward.value), bool(done.value), False, {}
+        return obs, float(reward.value), bool(done.value), False, {"lines_cleared": lines}
 
     def render(self):
         if self.render_mode == "human":

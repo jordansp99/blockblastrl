@@ -150,15 +150,15 @@ def main():
     
     # Architecture arguments
     parser.add_argument("--arch", type=str, default="cnn", choices=["cnn", "mlp"], help="Architecture type")
-    parser.add_argument("--fc-layers", type=int, nargs="+", default=[512, 512, 256], help="FC layer dimensions")
-    parser.add_argument("--cnn-channels", type=int, nargs=2, default=[32, 64], help="CNN channels")
+    parser.add_argument("--fc-layers", type=int, nargs="+", default=[256, 256, 256], help="FC layer dimensions")
+    parser.add_argument("--cnn-channels", type=int, nargs=2, default=[16, 32], help="CNN channels")
     parser.add_argument("--lstm", type=int, default=0, help="LSTM hidden size (0 to disable)")
     parser.add_argument("--transformer-layers", type=int, default=0, help="Transformer encoder layers")
     parser.add_argument("--transformer-heads", type=int, default=4, help="Transformer attention heads")
     parser.add_argument("--activation", type=str, default="relu", choices=["relu", "gelu"], help="Activation function")
-    parser.add_argument("--ent-coef", type=float, default=0.01, help="Entropy coefficient for PPO")
+    parser.add_argument("--ent-coef", type=float, default=0.00895357273417024, help="Entropy coefficient for PPO")
     parser.add_argument("--gamma", type=float, default=0.99, help="Discount factor gamma")
-    parser.add_argument("--lr", type=float, default=3e-4, help="Learning rate")
+    parser.add_argument("--lr", type=float, default=0.0004981024654599184, help="Learning rate")
 
     args = parser.parse_args()
 
@@ -288,35 +288,42 @@ def main():
             print(f"Loaded optimizer state from {args.checkpoint}")
 
     total_episodes = 0
+    episode_rewards = np.zeros(num_envs)
+    episode_lengths = np.zeros(num_envs)
+    
     start_time = time.time()
     num_updates = total_timesteps // batch_size
     
     for update in itertools.count(start_update):
-        # Annealing the rate if instructed to do so.
-        if anneal_lr:
-            frac = 1.0 - (update - 1.0) / num_updates
-            lrnow = max(frac * learning_rate, 0.0)
-            optimizer.param_groups[0]["lr"] = lrnow
+        # ... (LR annealing logic) ...
 
         for step in range(0, num_steps):
             global_step += num_envs
             obs_buffer[step] = next_obs
             dones_buffer[step] = next_done
             
-            # Alphabetical Slicing: [mask (192), obs (139)]
-            current_mask = next_obs[:, :mask_size]
-            current_obs = next_obs[:, mask_size : mask_size + obs_size]
+            # ... (Slicing and get_action logic) ...
 
-            with torch.no_grad():
-                action, logprob, _, value, _ = agent.get_action_and_value(current_obs, mask=current_mask)
-                values_buffer[step] = value.flatten()
+            next_obs, reward, terminated, truncated, infos = envs.step(action.cpu().numpy())
             
-            actions_buffer[step] = action
-            logprobs_buffer[step] = logprob
+            # TRACK UNIVERSAL METRICS
+            episode_rewards += reward
+            episode_lengths += 1
             
-            next_obs, reward, terminated, truncated, _ = envs.step(action.cpu().numpy())
+            for i, d in enumerate(torch.logical_or(torch.Tensor(terminated), torch.Tensor(truncated))):
+                if d:
+                    writer.add_scalar("charts/episodic_return", episode_rewards[i], global_step)
+                    writer.add_scalar("charts/episodic_length", episode_lengths[i], global_step)
+                    
+                    # Log the total lines cleared as a universal score
+                    if "lines_cleared" in infos:
+                        writer.add_scalar("charts/total_lines_cleared", infos["lines_cleared"][i], global_step)
+
+                    episode_rewards[i] = 0
+                    episode_lengths[i] = 0
+                    total_episodes += 1
+
             next_done = torch.logical_or(torch.Tensor(terminated), torch.Tensor(truncated)).to(device)
-            total_episodes += int(next_done.sum().item())
             next_obs = torch.Tensor(next_obs).to(device)
             rewards_buffer[step] = torch.tensor(reward).to(device)
 

@@ -44,6 +44,7 @@ typedef struct {
     int current_shapes[3]; 
     bool shape_active[3];
     int score;
+    int total_lines_cleared; // TRACK THIS UNIVERSALLY
     bool game_over;
     unsigned int rng_state;
 } GameState;
@@ -259,10 +260,25 @@ void step_game(GameState* state, int action, float* reward, bool* done) {
     }
     state->shape_active[shape_idx] = false;
     int lines_cleared = clear_lines(state);
+    state->total_lines_cleared += lines_cleared;
     
-    // EXTREMELY SIMPLIFIED REWARD: Only line clears
-    // 1 line: 100, 2 lines: 400, 3 lines: 900, 4 lines: 1600
-    *reward = (float)(lines_cleared * lines_cleared * 100);
+    // REWARD LOGIC:
+    // 1. Reward for clearing lines (flat 100 per line)
+    *reward = (float)(lines_cleared * 100.0f);
+    
+    // 2. HIGHER Reward for keeping the board clear (0.5 per empty space)
+    int blocks_on_board = 0;
+    for (int i = 0; i < BOARD_SIZE; i++) {
+        for (int j = 0; j < BOARD_SIZE; j++) {
+            if (state->board[i][j]) blocks_on_board++;
+        }
+    }
+    // Max bonus: 32.0 (if board is empty)
+    *reward += (64 - blocks_on_board) * 0.5f;
+    
+    // 3. Connectivity Bonus: Placing blocks NEXT to other blocks (encourages tight clusters)
+    // This helps avoid leaving single-cell holes.
+    *reward += calculate_connectedness(state) * 0.2f;
     
     state->score += (int)*reward;
 
