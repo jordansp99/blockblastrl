@@ -456,8 +456,9 @@ def main():
         avg_ret = np.mean(recent_returns) if recent_returns else 0
         avg_len = np.mean(recent_lengths) if recent_lengths else 0
         avg_line = np.mean(recent_lines) if recent_lines else 0
+        avg_step_rew = float(rewards_buffer.mean().item())
 
-        print(f"Update {update} | SPS: {sps} | EPS: {eps} | Ret: {avg_ret:.2f} | Len: {avg_len:.1f} | Lines: {avg_line:.1f}")
+        print(f"Update {update} | SPS: {sps} | EPS: {eps} | Ret: {avg_ret:.2f} | StepRew: {avg_step_rew:.2f} | Len: {avg_len:.1f} | Lines: {avg_line:.1f}")
         
         writer.add_scalar("charts/learning_rate", optimizer.param_groups[0]["lr"], global_step)
         writer.add_scalar("losses/value_loss", v_loss.item(), global_step)
