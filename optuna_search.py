@@ -222,10 +222,14 @@ def train(trial):
             
             actions_buffer[step] = action
             logprobs_buffer[step] = logprob
-            next_obs, reward, terminated, truncated, _ = envs.step(action.cpu().numpy())
-            next_done = torch.logical_or(torch.Tensor(terminated), torch.Tensor(truncated)).to(device)
-            next_obs = torch.Tensor(next_obs).to(device)
-            rewards_buffer[step] = torch.tensor(reward).to(device)
+        next_obs, reward, terminated, truncated, infos = envs.step(action.cpu().numpy())
+        next_done = torch.logical_or(torch.Tensor(terminated), torch.Tensor(truncated)).to(device)
+        next_obs = torch.Tensor(next_obs).to(device)
+        rewards_buffer[step] = torch.tensor(reward).to(device)
+        
+        # Track lines cleared in Optuna for universal comparison
+        if "lines_cleared" in infos:
+            writer.add_scalar("charts/total_lines_cleared", np.mean(infos["lines_cleared"]), global_step)
 
         with torch.no_grad():
             next_obs_actual = next_obs[:, mask_size : mask_size + obs_size]

@@ -302,7 +302,16 @@ def main():
             obs_buffer[step] = next_obs
             dones_buffer[step] = next_done
             
-            # ... (Slicing and get_action logic) ...
+            # Alphabetical Slicing: [mask (192), obs (139)]
+            current_mask = next_obs[:, :mask_size]
+            current_obs = next_obs[:, mask_size : mask_size + obs_size]
+
+            with torch.no_grad():
+                action, logprob, _, value, _ = agent.get_action_and_value(current_obs, mask=current_mask)
+                values_buffer[step] = value.flatten()
+            
+            actions_buffer[step] = action
+            logprobs_buffer[step] = logprob
 
             next_obs, reward, terminated, truncated, infos = envs.step(action.cpu().numpy())
             
