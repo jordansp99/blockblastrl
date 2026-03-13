@@ -453,7 +453,7 @@ def main():
         writer.add_scalar("losses/approx_kl", approx_kl.item(), global_step)
         writer.add_scalar("charts/SPS", sps, global_step)
         writer.add_scalar("charts/EPS", eps, global_step)
-        writer.add_scalar("charts/avg_reward", avg_reward, global_step)
+        writer.add_scalar("charts/avg_reward", rewards_buffer.mean().item(), global_step)
 
         if update == 1 or update % 50 == 0:
             checkpoint_path = f"checkpoints/{run_name}/update_{update}.pt"
