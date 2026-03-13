@@ -291,10 +291,16 @@ def main():
     episode_rewards = np.zeros(num_envs)
     episode_lengths = np.zeros(num_envs)
     
+    # Track recent stats for console printing
+    recent_returns = []
+    recent_lengths = []
+    recent_lines = []
+    
     start_time = time.time()
     num_updates = total_timesteps // batch_size
     
     for update in itertools.count(start_update):
+        # ...
         # ... (LR annealing logic) ...
 
         for step in range(0, num_steps):
@@ -321,12 +327,29 @@ def main():
             
             for i, d in enumerate(torch.logical_or(torch.Tensor(terminated), torch.Tensor(truncated))):
                 if d:
+                    # Log basics
                     writer.add_scalar("charts/episodic_return", episode_rewards[i], global_step)
                     writer.add_scalar("charts/episodic_length", episode_lengths[i], global_step)
                     
-                    # Log the total lines cleared as a universal score
+                    recent_returns.append(episode_rewards[i])
+                    recent_lengths.append(episode_lengths[i])
+                    
+                    # Log lines cleared (Universal metric)
                     if "lines_cleared" in infos:
-                        writer.add_scalar("charts/total_lines_cleared", infos["lines_cleared"][i], global_step)
+                        line_val = infos["lines_cleared"][i]
+                        writer.add_scalar("charts/total_lines_cleared", line_val, global_step)
+                        recent_lines.append(line_val)
+                    elif "final_info" in infos:
+                        final_info = infos["final_info"][i]
+                        if final_info is not None and "lines_cleared" in final_info:
+                            line_val = final_info["lines_cleared"]
+                            writer.add_scalar("charts/total_lines_cleared", line_val, global_step)
+                            recent_lines.append(line_val)
+
+                    # Keep only last 100 episodes for console averaging
+                    if len(recent_returns) > 100: recent_returns.pop(0)
+                    if len(recent_lengths) > 100: recent_lengths.pop(0)
+                    if len(recent_lines) > 100: recent_lines.pop(0)
 
                     episode_rewards[i] = 0
                     episode_lengths[i] = 0
@@ -416,8 +439,12 @@ def main():
         current_time = time.time() - start_time
         sps = int(global_step / current_time)
         eps = int(total_episodes / current_time)
-        avg_reward = float(rewards_buffer.mean().item())
-        print(f"Update {update} | SPS: {sps} | EPS: {eps} | Reward: {avg_reward:.2f} | Var: {explained_var:.2f}")
+        
+        avg_ret = np.mean(recent_returns) if recent_returns else 0
+        avg_len = np.mean(recent_lengths) if recent_lengths else 0
+        avg_line = np.mean(recent_lines) if recent_lines else 0
+
+        print(f"Update {update} | SPS: {sps} | EPS: {eps} | Ret: {avg_ret:.2f} | Len: {avg_len:.1f} | Lines: {avg_line:.1f}")
         
         writer.add_scalar("charts/learning_rate", optimizer.param_groups[0]["lr"], global_step)
         writer.add_scalar("losses/value_loss", v_loss.item(), global_step)
