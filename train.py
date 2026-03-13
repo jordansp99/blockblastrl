@@ -324,6 +324,10 @@ def main():
 
             next_obs, reward, terminated, truncated, infos = envs.step(action.cpu().numpy())
             
+            # Add step-level line logging for immediate feedback
+            if "lines_cleared" in infos:
+                writer.add_scalar("charts/lines_cleared_step", np.mean(infos["lines_cleared"]), global_step)
+            
             # TRACK UNIVERSAL METRICS
             episode_rewards += reward
             episode_lengths += 1
