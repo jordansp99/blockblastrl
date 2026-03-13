@@ -262,24 +262,26 @@ void step_game(GameState* state, int action, float* reward, bool* done) {
     int lines_cleared = clear_lines(state);
     state->total_lines_cleared += lines_cleared;
     
-    // REWARD LOGIC:
-    // 1. Reward for clearing lines (flat 100 per line)
-    *reward = (float)(lines_cleared * 100.0f);
-    
-    // 2. HIGHER Reward for keeping the board clear (0.5 per empty space)
+    // SIMPLIFIED POSITIVE REWARD FUNCTION
+    float total_reward = 0;
+
+    // 1. Line Clear Reward (flat 100 per line)
+    total_reward += (float)(lines_cleared * 100.0f);
+
+    // 2. Successful Placement Reward (Pure survival)
+    // AI gets points just for playing correctly.
+    total_reward += 1.0f;
+
+    // 3. Board Clarity Reward (Encourages keeping it empty)
     int blocks_on_board = 0;
     for (int i = 0; i < BOARD_SIZE; i++) {
         for (int j = 0; j < BOARD_SIZE; j++) {
             if (state->board[i][j]) blocks_on_board++;
         }
     }
-    // Max bonus: 32.0 (if board is empty)
-    *reward += (64 - blocks_on_board) * 0.5f;
-    
-    // 3. Connectivity Bonus: Placing blocks NEXT to other blocks (encourages tight clusters)
-    // This helps avoid leaving single-cell holes.
-    *reward += calculate_connectedness(state) * 0.2f;
-    
+    total_reward += (64 - blocks_on_board) * 0.5f;
+
+    *reward = total_reward;
     state->score += (int)*reward;
 
     bool all_used = true;
@@ -290,7 +292,7 @@ void step_game(GameState* state, int action, float* reward, bool* done) {
     state->game_over = *done;
     
     if (*done) {
-        *reward = -100.0f; 
+        *reward = 0; // No penalty, just stop earning points.
     }
 }
 
