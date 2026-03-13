@@ -324,6 +324,12 @@ def main():
 
             next_obs, reward, terminated, truncated, infos = envs.step(action.cpu().numpy())
             
+            # DEBUG: Print info structure once to verify metric location
+            if global_step <= num_envs:
+                print(f"DEBUG: Info keys: {infos.keys()}")
+                if "lines_cleared" in infos:
+                    print(f"DEBUG: lines_cleared sample: {infos['lines_cleared'][:5]}")
+            
             # Add step-level line logging for immediate feedback
             if "lines_cleared" in infos:
                 writer.add_scalar("charts/lines_cleared_step", np.mean(infos["lines_cleared"]), global_step)
