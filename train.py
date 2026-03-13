@@ -88,6 +88,7 @@ def make_env(**kwargs):
 
 def main():
     parser = argparse.ArgumentParser()
+    parser.add_argument("--num-envs", type=int, default=1024, help="Number of parallel environments")
     parser.add_argument("--checkpoint", type=str, default=None, help="Path to a checkpoint to load")
     parser.add_argument("--run-name", type=str, default=None, help="The name of the run (for TensorBoard)")
     parser.add_argument("--total-timesteps", type=int, default=1_000_000_000, help="Total timesteps (default: 1B for 'forever')")
@@ -95,14 +96,14 @@ def main():
     args = parser.parse_args()
 
     # PPO CONFIGURATION
-    num_envs = 128 
-    num_steps = 256 
+    num_envs = args.num_envs
+    num_steps = 128 # Reduced from 256 for more frequent updates with large env count
     total_timesteps = args.total_timesteps
-    learning_rate = 3e-4 # More stable for PPO
+    learning_rate = 3e-4 
     anneal_lr = True
     gamma = 0.99
     gae_lambda = 0.95
-    num_minibatches = 4
+    num_minibatches = 8 # Increased for larger batch size
     update_epochs = 4
     norm_adv = True
     clip_coef = 0.2
@@ -113,22 +114,54 @@ def main():
     batch_size = int(num_envs * num_steps)
     minibatch_size = int(batch_size // num_minibatches)
     
+    import psutil
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    print(f"Starting PPO training on {device}...")
+    print(f"Starting PPO training on {device} with {num_envs} envs...")
     
-    envs = pufferlib.vector.make(make_env, num_envs=num_envs, backend=pufferlib.vector.Serial)
+    # Ensure num_workers divides num_envs and doesn't exceed physical cores
+    num_workers = psutil.cpu_count(logical=False)
+    while num_envs % num_workers != 0:
+        num_workers -= 1
+
+    envs = pufferlib.vector.make(
+        make_env, 
+        num_envs=num_envs, 
+        num_workers=num_workers,
+        backend=pufferlib.vector.Multiprocessing
+    )
+    print(f"Using {num_workers} worker processes for {num_envs} environments.")
     agent = ChampionAgent().to(device)
     
+    global_step = 0
+    total_episodes = 0
+    start_update = 1
+    scaler = torch.cuda.amp.GradScaler()
+    optimizer = optim.Adam(agent.parameters(), lr=learning_rate, eps=1e-5)
+
     if args.checkpoint:
         if os.path.exists(args.checkpoint):
-            agent.load_state_dict(torch.load(args.checkpoint, map_location=device))
-            print(f"Loaded checkpoint: {args.checkpoint}")
+            checkpoint = torch.load(args.checkpoint, map_location=device)
+            if isinstance(checkpoint, dict) and "model_state_dict" in checkpoint:
+                agent.load_state_dict(checkpoint["model_state_dict"])
+                optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
+                scaler.load_state_dict(checkpoint["scaler_state_dict"])
+                global_step = checkpoint["global_step"]
+                start_update = checkpoint["update"] + 1
+                print(f"Resumed from checkpoint: {args.checkpoint} at update {checkpoint['update']}")
+            else:
+                # Legacy support for weights-only checkpoints
+                agent.load_state_dict(checkpoint)
+                print(f"Loaded weights from checkpoint: {args.checkpoint}")
         else:
             print(f"Error: Checkpoint {args.checkpoint} not found.")
             return
 
-    optimizer = optim.Adam(agent.parameters(), lr=learning_rate, eps=1e-5)
-    
+    try:
+        print("Compiling model for speed...")
+        agent = torch.compile(agent)
+    except Exception as e:
+        print(f"Torch compile failed (normal on some systems/versions): {e}")
+
     # Use existing run_name if provided to continue TensorBoard logs
     run_name = args.run_name if args.run_name else f"PPO_MARATHON_{int(time.time())}"
     writer = SummaryWriter(f"runs/{run_name}")
@@ -138,7 +171,6 @@ def main():
         subprocess.Popen(["tensorboard", "--logdir=runs", "--port=6006"], 
                          stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         time.sleep(2) # Wait for TB to start
-        webbrowser.open("http://localhost:6006")
     
     obs_size, mask_size = 139, 192
     obs_shape = envs.single_observation_space.shape
@@ -155,12 +187,10 @@ def main():
     next_obs = torch.Tensor(next_obs).to(device)
     next_done = torch.zeros(num_envs).to(device)
     
-    global_step = 0
-    total_episodes = 0
     start_time = time.time()
     num_updates = total_timesteps // batch_size
     
-    for update in itertools.count(1):
+    for update in itertools.count(start_update):
         # Annealing the rate if instructed to do so.
         if anneal_lr:
             frac = 1.0 - (update - 1.0) / num_updates
@@ -220,46 +250,50 @@ def main():
         # Optimizing the policy and value network
         b_inds = np.arange(batch_size)
         clipfracs = []
+        
         for epoch in range(update_epochs):
             np.random.shuffle(b_inds)
             for start in range(0, batch_size, minibatch_size):
                 end = start + minibatch_size
                 mb_inds = b_inds[start:end]
 
-                _, newlogprob, entropy, newvalue = agent.get_action_and_value(
-                    b_current_obs[mb_inds], 
-                    b_actions.long()[mb_inds], 
-                    mask=b_current_mask[mb_inds]
-                )
-                logratio = newlogprob - b_logprobs[mb_inds]
-                ratio = logratio.exp()
+                with torch.amp.autocast('cuda'): # Use modern AMP
+                    _, newlogprob, entropy, newvalue = agent.get_action_and_value(
+                        b_current_obs[mb_inds], 
+                        b_actions.long()[mb_inds], 
+                        mask=b_current_mask[mb_inds]
+                    )
+                    logratio = newlogprob - b_logprobs[mb_inds]
+                    ratio = logratio.exp()
 
-                with torch.no_grad():
-                    # calculate approx_kl http://joschu.net/blog/kl-approx.html
-                    old_approx_kl = (-logratio).mean()
-                    approx_kl = ((ratio - 1) - logratio).mean()
-                    clipfracs += [((ratio - 1.0).abs() > clip_coef).float().mean().item()]
+                    with torch.no_grad():
+                        # calculate approx_kl http://joschu.net/blog/kl-approx.html
+                        old_approx_kl = (-logratio).mean()
+                        approx_kl = ((ratio - 1) - logratio).mean()
+                        clipfracs += [((ratio - 1.0).abs() > clip_coef).float().mean().item()]
 
-                mb_advantages = b_advantages[mb_inds]
-                if norm_adv:
-                    mb_advantages = (mb_advantages - mb_advantages.mean()) / (mb_advantages.std() + 1e-8)
+                    mb_advantages = b_advantages[mb_inds]
+                    if norm_adv:
+                        mb_advantages = (mb_advantages - mb_advantages.mean()) / (mb_advantages.std() + 1e-8)
 
-                # Policy loss
-                pg_loss1 = -mb_advantages * ratio
-                pg_loss2 = -mb_advantages * torch.clamp(ratio, 1 - clip_coef, 1 + clip_coef)
-                pg_loss = torch.max(pg_loss1, pg_loss2).mean()
+                    # Policy loss
+                    pg_loss1 = -mb_advantages * ratio
+                    pg_loss2 = -mb_advantages * torch.clamp(ratio, 1 - clip_coef, 1 + clip_coef)
+                    pg_loss = torch.max(pg_loss1, pg_loss2).mean()
 
-                # Value loss
-                newvalue = newvalue.view(-1)
-                v_loss = 0.5 * ((newvalue - b_returns[mb_inds]) ** 2).mean()
+                    # Value loss
+                    newvalue = newvalue.view(-1)
+                    v_loss = 0.5 * ((newvalue - b_returns[mb_inds]) ** 2).mean()
 
-                entropy_loss = entropy.mean()
-                loss = pg_loss - ent_coef * entropy_loss + v_loss * vf_coef
+                    entropy_loss = entropy.mean()
+                    loss = pg_loss - ent_coef * entropy_loss + v_loss * vf_coef
 
                 optimizer.zero_grad()
-                loss.backward()
+                scaler.scale(loss).backward() # Scale loss
+                scaler.unscale_(optimizer) # Unscale before clipping
                 nn.utils.clip_grad_norm_(agent.parameters(), max_grad_norm)
-                optimizer.step()
+                scaler.step(optimizer) # Step scaler
+                scaler.update() # Update scaler
 
         y_pred, y_true = b_values.cpu().numpy(), b_returns.cpu().numpy()
         var_y = np.var(y_true)
@@ -284,7 +318,13 @@ def main():
         if update == 1 or update % 50 == 0:
             checkpoint_path = f"checkpoints/{run_name}/update_{update}.pt"
             os.makedirs(os.path.dirname(checkpoint_path), exist_ok=True)
-            torch.save(agent.state_dict(), checkpoint_path)
+            torch.save({
+                "update": update,
+                "global_step": global_step,
+                "model_state_dict": agent.state_dict(),
+                "optimizer_state_dict": optimizer.state_dict(),
+                "scaler_state_dict": scaler.state_dict(),
+            }, checkpoint_path)
 
     envs.close()
     writer.close()
