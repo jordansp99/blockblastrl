@@ -264,6 +264,14 @@ void step_game(GameState* state, int action, float* reward, bool* done) {
 
 void free_game(GameState* state) { free(state); }
 
+void get_game_state(GameState* state, GameState* out) {
+    memcpy(out, state, sizeof(GameState));
+}
+
+void set_game_state(GameState* state, GameState* in) {
+    memcpy(state, in, sizeof(GameState));
+}
+
 bool window_initialized = false;
 void init_render() {
     if (!window_initialized) { InitWindow(500, 750, "BlockBlast Expert"); SetTargetFPS(60); window_initialized = true; }

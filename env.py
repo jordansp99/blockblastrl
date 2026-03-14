@@ -31,6 +31,8 @@ class BlockBlastEnv(gymnasium.Env):
         self.lib.get_observation.argtypes = [c_void_p, POINTER(c_int)]
         self.lib.get_action_mask.argtypes = [c_void_p, POINTER(c_int)]
         self.lib.step_game.argtypes = [c_void_p, c_int, POINTER(c_float), POINTER(c_bool)]
+        self.lib.get_game_state.argtypes = [c_void_p, c_void_p]
+        self.lib.set_game_state.argtypes = [c_void_p, c_void_p]
         self.lib.render_game_state.argtypes = [c_void_p]
         self.lib.close_render.argtypes = []
         self.lib.free_game.argtypes = [c_void_p]

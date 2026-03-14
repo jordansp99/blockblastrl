@@ -79,78 +79,93 @@ class Agent(nn.Module):
 
 def main():
     if len(sys.argv) < 2:
-        print("Usage: python play.py <checkpoint_path> [seed]")
+        print("Usage: python play.py <checkpoint_path> [seed] [--mcts <sims>]")
         sys.exit(1)
         
     checkpoint_path = sys.argv[1]
-    seed = int(sys.argv[2]) if len(sys.argv) > 2 else None
-    arch = "cnn" # Default to the Champion CNN architecture
+    seed = None
+    num_sims = 0
     
-    # Initialize environment via PufferLib wrapper
+    # Parse simple args
+    for i in range(2, len(sys.argv)):
+        if sys.argv[i] == "--mcts":
+            num_sims = int(sys.argv[i+1])
+        elif sys.argv[i].isdigit():
+            seed = int(sys.argv[i])
+            
+    arch = "cnn"
+    
+    # Initialize environment
     import pufferlib.emulation
+    blockblast_env = env.BlockBlastEnv(render_mode="human", seed=seed)
     puffer_env = pufferlib.emulation.GymnasiumPufferEnv(
-        env_creator=lambda: env.BlockBlastEnv(render_mode="human", seed=seed)
+        env_creator=lambda: blockblast_env
     )
     
     obs_size = 139
     action_size = 192
     
-    # Detect device (CUDA, MPS, or CPU)
-    if torch.cuda.is_available():
-        device = torch.device("cuda")
-    elif torch.backends.mps.is_available():
-        device = torch.device("mps")
-    else:
-        device = torch.device("cpu")
-        
+    # Detect device
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Using device: {device} for playback.")
     agent = Agent(obs_size, action_size, arch=arch).to(device)
     
     if os.path.exists(checkpoint_path):
         checkpoint = torch.load(checkpoint_path, map_location=device)
         if isinstance(checkpoint, dict) and "model_state_dict" in checkpoint:
-            # Handle the new resumeable checkpoint format
             state_dict = checkpoint["model_state_dict"]
-            # Remove '_orig_mod.' prefix if it was saved from a compiled model
-            new_state_dict = {}
-            for k, v in state_dict.items():
-                name = k[10:] if k.startswith('_orig_mod.') else k
-                new_state_dict[name] = v
+            new_state_dict = {k.replace("_orig_mod.", ""): v for k, v in state_dict.items()}
             agent.load_state_dict(new_state_dict)
-            print(f"Resumed from checkpoint: {checkpoint_path} (Update {checkpoint['update']})")
         else:
-            # Legacy support for weights-only checkpoints
             agent.load_state_dict(checkpoint)
-            print(f"Loaded weights from checkpoint: {checkpoint_path}")
+        print(f"Loaded checkpoint: {checkpoint_path}")
     else:
         print(f"Error: Checkpoint {checkpoint_path} not found.")
         sys.exit(1)
         
     agent.eval()
+    
+    # Setup MCTS if requested
+    mcts = None
+    if num_sims > 0:
+        import mcts as mcts_lib
+        from ctypes import sizeof
+        # We need to know the size of the GameState struct
+        # Based on blockblast_lib.c:
+        # board[8][8] (64 ints), board_colors[8][8] (64 ints), 
+        # current_shapes[3] (3 ints), shape_active[3] (3 bools), 
+        # score (1 int), game_over (1 bool)
+        # Note: Bools in C are often 1 byte, but ints are 4. 
+        # A safer way is to just use a large enough buffer or define the struct in ctypes.
+        # Looking at the struct, it's roughly (64+64+3+1)*4 + 4 = 532 bytes.
+        # Let's use 1024 to be safe.
+        mcts = mcts_lib.MCTSEngine(agent, device, blockblast_env.lib, 1024)
+        print(f"MCTS enabled with {num_sims} simulations per move.")
+
     obs, info = puffer_env.reset()
     done = False
     
-    print("AI is now playing (Slow Speed)...")
+    print("AI is now playing...")
     
     mask_size, obs_size = 192, 139
     
     while not done:
-        # Alphabetical Slicing: [mask (192), obs (139)]
-        obs_flat = torch.Tensor(obs.flatten()).to(device)
-        current_mask = obs_flat[:mask_size].unsqueeze(0)
-        current_obs = obs_flat[mask_size : mask_size + obs_size].unsqueeze(0)
-        
-        with torch.no_grad():
-            action = agent.get_action(current_obs, mask=current_mask)
+        if mcts:
+            # Use MCTS to find the best action
+            action = mcts.search(blockblast_env.state_ptr, num_simulations=num_sims)
+        else:
+            # Standard Reactive Policy
+            obs_flat = torch.Tensor(obs.flatten()).to(device)
+            current_mask = obs_flat[:mask_size].unsqueeze(0)
+            current_obs = obs_flat[mask_size : mask_size + obs_size].unsqueeze(0)
+            with torch.no_grad():
+                action = agent.get_action(current_obs, mask=current_mask)
             
         obs, reward, terminated, truncated, info = puffer_env.step(action)
         done = terminated or truncated
+        time.sleep(0.5) # Slightly faster than before
         
-        # SLOW SPEED: 1 second per move
-        time.sleep(1.0)
-        
-    print("Game Over! Board is full or no valid moves left.")
-    # HANG ON GAMEOVER: Wait 5 seconds before closing
+    print("Game Over!")
     time.sleep(5.0)
     puffer_env.close()
 
