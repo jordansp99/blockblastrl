@@ -65,8 +65,8 @@ class BatchedMCTSEngine:
         masks_tensor = torch.from_numpy(self.mask_buffer).view(self.num_envs, 192).to(self.device)
         
         with torch.no_grad():
-            with torch.amp.autocast('cuda'):
-                hidden = model._get_hidden(obs_tensor)
+            with torch.amp.autocast(device_type="cuda", enabled=(self.device.type == "cuda")):
+                hidden, _ = model._get_hidden(obs_tensor)
                 all_logits = model.actor(hidden)
                 priors = torch.softmax(all_logits + (masks_tensor == 0) * -1e9, dim=1).cpu().numpy()
 
@@ -99,8 +99,9 @@ class BatchedMCTSEngine:
             self.lib.get_observation_batch(self.temp_state_ptrs, self.obs_buffer.ctypes.data_as(POINTER(c_int)), self.num_envs)
             obs_tensor = torch.from_numpy(self.obs_buffer).view(self.num_envs, 139).float().to(self.device)
             with torch.no_grad():
-                with torch.amp.autocast('cuda'):
-                    values = model.critic(model._get_hidden(obs_tensor)).flatten().cpu().numpy()
+                with torch.amp.autocast(device_type="cuda", enabled=(self.device.type == "cuda")):
+                    hidden, _ = model._get_hidden(obs_tensor)
+                    values = model.critic(hidden).flatten().cpu().numpy()
             
             # C. BACKPROPAGATION (C-Accelerated)
             child_indices = (c_int * self.num_envs)()

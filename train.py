@@ -153,9 +153,9 @@ def main():
     parser.add_argument("--transformer-layers", type=int, default=0, help="Transformer encoder layers")
     parser.add_argument("--transformer-heads", type=int, default=4, help="Transformer attention heads")
     parser.add_argument("--activation", type=str, default="relu", choices=["relu", "gelu"], help="Activation function")
-    parser.add_argument("--ent-coef", type=float, default=0.02, help="Starting entropy coefficient")
+    parser.add_argument("--ent-coef", type=float, default=0.05, help="Starting entropy coefficient")
     parser.add_argument("--gamma", type=float, default=0.99, help="Discount factor gamma")
-    parser.add_argument("--lr", type=float, default=0.0004981024654599184, help="Learning rate")
+    parser.add_argument("--lr", type=float, default=1e-4, help="Learning rate")
     args = parser.parse_args()
 
     # PPO CONFIGURATION
@@ -172,14 +172,19 @@ def main():
     clip_coef = 0.2
     ent_coef = args.ent_coef
     vf_coef = 0.5
-    max_grad_norm = 1.0 
+    max_grad_norm = 0.5 
     mcts_sims = args.mcts_sims
     
     batch_size = int(num_envs * num_steps)
     minibatch_size = int(batch_size // num_minibatches)
     
     import psutil
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    if torch.cuda.is_available():
+        device = torch.device("cuda")
+    elif torch.backends.mps.is_available():
+        device = torch.device("mps")
+    else:
+        device = torch.device("cpu")
     print(f"Starting PPO training on {device} with {num_envs} envs...")
     
     # MCTS training requires Serial backend to access state pointers
@@ -511,7 +516,7 @@ def main():
         avg_line = np.mean(recent_lines) if recent_lines else 0
         avg_step_rew = float(rewards_buffer.mean().item())
 
-        print(f"Update {update} | SPS: {sps} | Ret: {avg_ret:.2f} | StepRew: {avg_step_rew:.2f} | Len: {avg_len:.1f} | Lines: {avg_line:.1f} | Ent: {entropy_loss.item():.4f} | KL: {approx_kl.item():.4f}")
+        print(f"Update {update} | SPS: {sps} | AvgReward: {avg_ret:.2f} | StepRew: {avg_step_rew:.2f} | Len: {avg_len:.1f} | Lines: {avg_line:.1f} | Ent: {entropy_loss.item():.4f} | KL: {approx_kl.item():.4f}")
         
         writer.add_scalar("charts/learning_rate", optimizer.param_groups[0]["lr"], global_step)
         writer.add_scalar("charts/ent_coef", current_ent_coef, global_step)
