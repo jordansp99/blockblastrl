@@ -14,7 +14,6 @@ import pufferlib.vector
 import pufferlib.emulation
 import itertools
 import subprocess
-import webbrowser
 from torch.utils.tensorboard import SummaryWriter
 
 class FlexibleAgent(nn.Module):
@@ -137,10 +136,13 @@ def make_env(**kwargs):
 
 def main():
     parser = argparse.ArgumentParser()
+    parser.add_argument("--num-envs", type=int, default=1024, help="Number of parallel environments")
     parser.add_argument("--checkpoint", type=str, default=None, help="Path to a checkpoint to load")
     parser.add_argument("--run-name", type=str, default=None, help="The name of the run (for TensorBoard)")
     parser.add_argument("--total-timesteps", type=int, default=1_000_000_000, help="Total timesteps")
     parser.add_argument("--no-tensorboard", action="store_true", help="Don't launch tensorboard")
+    parser.add_argument("--mcts-sims", type=int, default=0, help="Number of MCTS simulations per step (0 to disable)")
+    parser.add_argument("--no-compile", action="store_true", help="Disable torch.compile")
     parser.add_argument("--start-update", type=int, default=None, help="Manually set the starting update number")
     
     # Architecture arguments
@@ -154,32 +156,50 @@ def main():
     parser.add_argument("--ent-coef", type=float, default=0.02, help="Starting entropy coefficient")
     parser.add_argument("--gamma", type=float, default=0.99, help="Discount factor gamma")
     parser.add_argument("--lr", type=float, default=0.0004981024654599184, help="Learning rate")
-
     args = parser.parse_args()
 
     # PPO CONFIGURATION
-    num_envs = 128 
-    num_steps = 256 
+    num_envs = args.num_envs
+    num_steps = 128
     total_timesteps = args.total_timesteps
     learning_rate = args.lr
     anneal_lr = True
     gamma = args.gamma
     gae_lambda = 0.95
-    num_minibatches = 4
+    num_minibatches = 8
     update_epochs = 4
     norm_adv = True
     clip_coef = 0.2
     ent_coef = args.ent_coef
     vf_coef = 0.5
-    max_grad_norm = 1.0 # Increased for more robust updates
+    max_grad_norm = 1.0 
+    mcts_sims = args.mcts_sims
     
     batch_size = int(num_envs * num_steps)
     minibatch_size = int(batch_size // num_minibatches)
     
+    import psutil
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    print(f"Starting PPO training on {device}...")
+    print(f"Starting PPO training on {device} with {num_envs} envs...")
     
-    envs = pufferlib.vector.make(make_env, num_envs=num_envs, backend=pufferlib.vector.Serial)
+    # MCTS training requires Serial backend to access state pointers
+    backend = pufferlib.vector.Multiprocessing if mcts_sims == 0 else pufferlib.vector.Serial
+    
+    if mcts_sims == 0:
+        num_workers = psutil.cpu_count(logical=False)
+        while num_envs % num_workers != 0:
+            num_workers -= 1
+    else:
+        num_workers = 1 # Serial
+        print("MCTS-Guided Training Enabled. Using Serial backend for state access.")
+
+    envs = pufferlib.vector.make(
+        make_env, 
+        num_envs=num_envs, 
+        num_workers=num_workers,
+        backend=backend
+    )
+    
     agent = FlexibleAgent(
         arch_type=args.arch, 
         cnn_channels=args.cnn_channels, 
@@ -223,14 +243,65 @@ def main():
     with open(os.path.join(checkpoint_dir, "config.json"), "w") as f:
         json.dump(config, f, indent=4)
         
+    global_step = 0
+    total_episodes = 0
+    start_update = 1
+    scaler = torch.amp.GradScaler(enabled=(device.type == 'cuda'))
+    optimizer = optim.Adam(agent.parameters(), lr=learning_rate, eps=1e-5)
+
+    if args.checkpoint:
+        if os.path.exists(args.checkpoint):
+            checkpoint = torch.load(args.checkpoint, map_location=device)
+            if isinstance(checkpoint, dict):
+                if "agent_state_dict" in checkpoint:
+                    agent.load_state_dict(checkpoint["agent_state_dict"])
+                    start_update = checkpoint.get("update", 0) + 1
+                    global_step = checkpoint.get("global_step", 0)
+                    if "optimizer_state_dict" in checkpoint:
+                        optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
+                    print(f"Resumed from checkpoint: {args.checkpoint} at update {start_update-1}")
+                elif "model_state_dict" in checkpoint:
+                    state_dict = checkpoint["model_state_dict"]
+                    new_state_dict = {k.replace("_orig_mod.", ""): v for k, v in state_dict.items()}
+                    agent.load_state_dict(new_state_dict)
+                    if "optimizer_state_dict" in checkpoint:
+                        optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
+                    if "scaler_state_dict" in checkpoint:
+                        scaler.load_state_dict(checkpoint["scaler_state_dict"])
+                    global_step = checkpoint.get("global_step", 0)
+                    start_update = checkpoint.get("update", 0) + 1
+                    print(f"Resumed from remote-format checkpoint: {args.checkpoint} at update {start_update-1}")
+                else:
+                    agent.load_state_dict(checkpoint)
+                    print(f"Loaded weights from checkpoint: {args.checkpoint} (Legacy format)")
+            else:
+                agent.load_state_dict(checkpoint)
+                print(f"Loaded weights from checkpoint: {args.checkpoint} (Legacy format)")
+        else:
+            print(f"Error: Checkpoint {args.checkpoint} not found.")
+            return
+
+    if args.start_update is not None:
+        start_update = args.start_update
+        global_step = (start_update - 1) * batch_size
+        print(f"Manually overriding starting update to {start_update}")
+
+    try:
+        if not args.no_compile and hasattr(torch, "compile"):
+            print("Compiling model for speed (this can take 2-5 minutes on the first run)...")
+            agent = torch.compile(agent)
+        else:
+            print("Torch compile disabled.")
+    except Exception as e:
+        print(f"Torch compile failed: {e}")
+
     writer = SummaryWriter(f"runs/{run_name}")
     
     if not args.no_tensorboard:
         print(f"Launching TensorBoard for {run_name}...")
         subprocess.Popen(["tensorboard", "--logdir=runs", "--port=6006"], 
                          stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        time.sleep(2) # Wait for TB to start
-        webbrowser.open("http://localhost:6006")
+        time.sleep(2)
     
     obs_size, mask_size = 139, 192
     obs_shape = envs.single_observation_space.shape
@@ -242,50 +313,13 @@ def main():
     rewards_buffer = torch.zeros((num_steps, num_envs)).to(device)
     dones_buffer = torch.zeros((num_steps, num_envs)).to(device)
     values_buffer = torch.zeros((num_steps, num_envs)).to(device)
+    # Target distribution for MCTS distillation
+    mcts_targets_buffer = torch.zeros((num_steps, num_envs, 192)).to(device)
     
     next_obs, _ = envs.reset()
     next_obs = torch.Tensor(next_obs).to(device)
     next_done = torch.zeros(num_envs).to(device)
     
-    start_update = 1
-    global_step = 0
-    
-    if args.checkpoint:
-        if os.path.exists(args.checkpoint):
-            checkpoint = torch.load(args.checkpoint, map_location=device)
-            if isinstance(checkpoint, dict) and "agent_state_dict" in checkpoint:
-                agent.load_state_dict(checkpoint["agent_state_dict"])
-                start_update = checkpoint.get("update", 0) + 1
-                global_step = checkpoint.get("global_step", 0)
-                print(f"Loaded checkpoint: {args.checkpoint} (Resuming from update {start_update})")
-            else:
-                agent.load_state_dict(checkpoint)
-                import re
-                match = re.search(r"update_(\d+)", os.path.basename(args.checkpoint))
-                if match:
-                    start_update = int(match.group(1)) + 1
-                    global_step = (start_update - 1) * batch_size
-                    print(f"Loaded checkpoint: {args.checkpoint} (Legacy format, guessed update {start_update})")
-                else:
-                    print(f"Loaded checkpoint: {args.checkpoint} (Legacy format)")
-        else:
-            print(f"Error: Checkpoint {args.checkpoint} not found.")
-            return
-
-    if args.start_update is not None:
-        start_update = args.start_update
-        global_step = (start_update - 1) * batch_size
-        print(f"Manually overriding starting update to {start_update}")
-
-    optimizer = optim.Adam(agent.parameters(), lr=learning_rate, eps=1e-5)
-    
-    if args.checkpoint and os.path.exists(args.checkpoint):
-        checkpoint = torch.load(args.checkpoint, map_location=device)
-        if isinstance(checkpoint, dict) and "optimizer_state_dict" in checkpoint:
-            optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
-            print(f"Loaded optimizer state from {args.checkpoint}")
-
-    total_episodes = 0
     episode_rewards = np.zeros(num_envs)
     episode_lengths = np.zeros(num_envs)
     
@@ -293,6 +327,14 @@ def main():
     recent_lengths = []
     recent_lines = []
     
+    # Initialize MCTS if enabled
+    mcts_engine = None
+    if mcts_sims > 0:
+        import mcts
+        # Access the underlying env's lib through the PufferLib wrapper
+        c_lib = envs.envs[0].env.lib
+        mcts_engine = mcts.BatchedMCTSEngine(agent, device, c_lib, 1024, num_envs)
+
     start_time = time.time()
     num_updates = total_timesteps // batch_size
     
@@ -306,7 +348,10 @@ def main():
         # Slower entropy decay
         current_ent_coef = ent_coef * max(0.2, frac)
 
+        print(f"Starting rollout for Update {update}...")
         for step in range(0, num_steps):
+            if step % 10 == 0:
+                print(f"  Step {step}/{num_steps}...")
             global_step += num_envs
             obs_buffer[step] = next_obs
             dones_buffer[step] = next_done
@@ -314,13 +359,25 @@ def main():
             current_mask = next_obs[:, :mask_size]
             current_obs = next_obs[:, mask_size : mask_size + obs_size]
 
-            with torch.no_grad():
-                action, logprob, _, value, _ = agent.get_action_and_value(current_obs, mask=current_mask)
-                values_buffer[step] = value.flatten()
+            if mcts_engine:
+                # Use MCTS to find best action and target distribution
+                state_ptrs = [e.env.state_ptr for e in envs.envs]
+                action, target_dist = mcts_engine.search(state_ptrs, num_simulations=mcts_sims)
+                action = torch.tensor(action).to(device)
+                mcts_targets_buffer[step] = torch.tensor(target_dist).to(device)
+                
+                with torch.no_grad():
+                    _, logprob, _, value, _ = agent.get_action_and_value(current_obs, action=action, mask=current_mask)
+                    values_buffer[step] = value.flatten()
+                    logprobs_buffer[step] = logprob
+            else:
+                # Standard PPO Rollout
+                with torch.no_grad():
+                    action, logprob, _, value, _ = agent.get_action_and_value(current_obs, mask=current_mask)
+                    values_buffer[step] = value.flatten()
+                logprobs_buffer[step] = logprob
             
             actions_buffer[step] = action
-            logprobs_buffer[step] = logprob
-
             next_obs, reward, terminated, truncated, infos = envs.step(action.cpu().numpy())
             
             if "lines_cleared" in infos:
@@ -379,6 +436,8 @@ def main():
         b_advantages = advantages.reshape(-1)
         b_returns = returns.reshape(-1)
         b_values = values_buffer.reshape(-1)
+        b_mcts_targets = mcts_targets_buffer.reshape(-1, 192)
+        
         b_current_obs = b_obs[:, mask_size : mask_size + obs_size]
         b_current_mask = b_obs[:, :mask_size]
 
@@ -390,37 +449,56 @@ def main():
                 end = start + minibatch_size
                 mb_inds = b_inds[start:end]
 
-                _, newlogprob, entropy, newvalue, _ = agent.get_action_and_value(
-                    b_current_obs[mb_inds], 
-                    b_actions.long()[mb_inds], 
-                    mask=b_current_mask[mb_inds]
-                )
-                logratio = newlogprob - b_logprobs[mb_inds]
-                ratio = logratio.exp()
+                with torch.amp.autocast(device_type=device.type, enabled=(device.type == 'cuda')):
+                    _, newlogprob, entropy, newvalue, _ = agent.get_action_and_value(
+                        b_current_obs[mb_inds], 
+                        b_actions.long()[mb_inds], 
+                        mask=b_current_mask[mb_inds]
+                    )
+                    
+                    logratio = newlogprob - b_logprobs[mb_inds]
+                    ratio = logratio.exp()
 
-                with torch.no_grad():
-                    approx_kl = ((ratio - 1) - logratio).mean()
-                    clipfracs += [((ratio - 1.0).abs() > clip_coef).float().mean().item()]
+                    with torch.no_grad():
+                        approx_kl = ((ratio - 1) - logratio).mean()
+                        clipfracs += [((ratio - 1.0).abs() > clip_coef).float().mean().item()]
 
-                mb_advantages = b_advantages[mb_inds]
-                if norm_adv:
-                    mb_advantages = (mb_advantages - mb_advantages.mean()) / (mb_advantages.std() + 1e-8)
+                    mb_advantages = b_advantages[mb_inds]
+                    if norm_adv:
+                        mb_advantages = (mb_advantages - mb_advantages.mean()) / (mb_advantages.std() + 1e-8)
+                    
+                    # Policy Loss (PPO)
+                    pg_loss1 = -mb_advantages * ratio
+                    pg_loss2 = -mb_advantages * torch.clamp(ratio, 1 - clip_coef, 1 + clip_coef)
+                    pg_loss = torch.max(pg_loss1, pg_loss2).mean()
 
-                pg_loss1 = -mb_advantages * ratio
-                pg_loss2 = -mb_advantages * torch.clamp(ratio, 1 - clip_coef, 1 + clip_coef)
-                pg_loss = torch.max(pg_loss1, pg_loss2).mean()
+                    # Value Loss
+                    newvalue = newvalue.view(-1)
+                    v_loss = 0.5 * ((newvalue - b_returns[mb_inds]) ** 2).mean()
+                    
+                    # Entropy Loss
+                    entropy_loss = entropy.mean()
 
-                newvalue = newvalue.view(-1)
-                v_loss = 0.5 * ((newvalue - b_returns[mb_inds]) ** 2).mean()
-                entropy_loss = entropy.mean()
-                
-                # USE ANNEALED ENTROPY
-                loss = pg_loss - current_ent_coef * entropy_loss + v_loss * vf_coef
+                    # Distillation Loss (AlphaZero style)
+                    distill_loss = 0
+                    if mcts_sims > 0:
+                        # Re-calculate logits for distillation to avoid double-counting mask in log_softmax if needed
+                        # But get_action_and_value already does something similar.
+                        # Let's just use the logits from actor directly.
+                        hidden, _ = (agent._orig_mod if hasattr(agent, "_orig_mod") else agent)._get_hidden(b_current_obs[mb_inds])
+                        logits = (agent._orig_mod if hasattr(agent, "_orig_mod") else agent).actor(hidden)
+                        logits = logits + (b_current_mask[mb_inds] == 0) * -1e9
+                        log_probs = torch.log_softmax(logits, dim=1)
+                        distill_loss = -(b_mcts_targets[mb_inds] * log_probs).sum(dim=1).mean()
+
+                    loss = pg_loss - current_ent_coef * entropy_loss + v_loss * vf_coef + distill_loss
 
                 optimizer.zero_grad()
-                loss.backward()
+                scaler.scale(loss).backward()
+                scaler.unscale_(optimizer)
                 nn.utils.clip_grad_norm_(agent.parameters(), max_grad_norm)
-                optimizer.step()
+                scaler.step(optimizer)
+                scaler.update()
 
         y_pred, y_true = b_values.cpu().numpy(), b_returns.cpu().numpy()
         var_y = np.var(y_true)
@@ -443,15 +521,18 @@ def main():
         writer.add_scalar("losses/approx_kl", approx_kl.item(), global_step)
         writer.add_scalar("charts/SPS", sps, global_step)
         writer.add_scalar("charts/avg_reward", rewards_buffer.mean().item(), global_step)
+        writer.add_scalar("charts/explained_variance", explained_var, global_step)
 
         if update == 1 or update % 50 == 0:
             checkpoint_path = f"checkpoints/{run_name}/update_{update}.pt"
             os.makedirs(os.path.dirname(checkpoint_path), exist_ok=True)
             torch.save({
-                "agent_state_dict": agent.state_dict(),
-                "optimizer_state_dict": optimizer.state_dict(),
                 "update": update,
                 "global_step": global_step,
+                "agent_state_dict": (agent._orig_mod if hasattr(agent, "_orig_mod") else agent).state_dict(),
+                "optimizer_state_dict": optimizer.state_dict(),
+                "scaler_state_dict": scaler.state_dict(),
+                "config": config
             }, checkpoint_path)
 
     envs.close()

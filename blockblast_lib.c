@@ -298,6 +298,90 @@ void step_game(GameState* state, int action, float* reward, bool* done) {
 
 void free_game(GameState* state) { free(state); }
 
+void get_game_state(GameState* state, GameState* out) {
+    memcpy(out, state, sizeof(GameState));
+}
+
+void set_game_state(GameState* state, GameState* in) {
+    memcpy(state, in, sizeof(GameState));
+}
+
+// BATCH FUNCTIONS FOR MCTS SPEED
+void step_game_batch(GameState** states, int* actions, float* rewards, bool* dones, int n) {
+    for (int i = 0; i < n; i++) {
+        step_game(states[i], actions[i], &rewards[i], &dones[i]);
+    }
+}
+
+void get_observation_batch(GameState** states, int* obs_out, int n) {
+    for (int i = 0; i < n; i++) {
+        get_observation(states[i], obs_out + (i * 139));
+    }
+}
+
+void get_action_mask_batch(GameState** states, int* mask_out, int n) {
+    for (int i = 0; i < n; i++) {
+        get_action_mask(states[i], mask_out + (i * 192));
+    }
+}
+
+void copy_game_state_batch(GameState** src, GameState** dest, int n) {
+    for (int i = 0; i < n; i++) {
+        memcpy(dest[i], src[i], sizeof(GameState));
+    }
+}
+
+// C-ACCELERATED MCTS SELECTION
+typedef struct {
+    int action_id;
+    float prior;
+    int visit_count;
+    float value_sum;
+} CNode;
+
+void mcts_select_batch(GameState** current_states, CNode** tree_nodes, int* num_children, int* selected_actions, int n, float c_puct) {
+    for (int i = 0; i < n; i++) {
+        if (num_children[i] == 0) {
+            selected_actions[i] = -1;
+            continue;
+        }
+
+        int total_visits = 0;
+        for (int j = 0; j < num_children[i]; j++) {
+            total_visits += tree_nodes[i][j].visit_count;
+        }
+        float sqrt_total = sqrtf((float)total_visits);
+
+        float best_score = -1e9f;
+        int best_idx = 0;
+
+        for (int j = 0; j < num_children[i]; j++) {
+            CNode* c = &tree_nodes[i][j];
+            float q = (c->visit_count > 0) ? (c->value_sum / c->visit_count) : 0.0f;
+            float u = c_puct * c->prior * (sqrt_total / (1.0f + c->visit_count));
+            float score = q + u;
+            if (score > best_score) {
+                best_score = score;
+                best_idx = j;
+            }
+        }
+        
+        selected_actions[i] = tree_nodes[i][best_idx].action_id;
+        float reward;
+        bool done;
+        step_game(current_states[i], selected_actions[i], &reward, &done);
+    }
+}
+
+void mcts_backprop_batch(CNode** tree_nodes, int* child_indices, float* values, int n) {
+    for (int i = 0; i < n; i++) {
+        if (child_indices[i] != -1) {
+            tree_nodes[i][child_indices[i]].visit_count++;
+            tree_nodes[i][child_indices[i]].value_sum += values[i];
+        }
+    }
+}
+
 bool window_initialized = false;
 void init_render() {
     if (!window_initialized) { InitWindow(500, 750, "BlockBlast Expert"); SetTargetFPS(60); window_initialized = true; }

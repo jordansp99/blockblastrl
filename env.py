@@ -44,6 +44,19 @@ class BlockBlastEnv(gymnasium.Env):
         self.lib.get_observation.argtypes = [c_void_p, POINTER(c_int)]
         self.lib.get_action_mask.argtypes = [c_void_p, POINTER(c_int)]
         self.lib.step_game.argtypes = [c_void_p, c_int, POINTER(c_float), POINTER(c_bool)]
+        self.lib.get_game_state.argtypes = [c_void_p, c_void_p]
+        self.lib.set_game_state.argtypes = [c_void_p, c_void_p]
+        
+        # Batched functions
+        self.lib.step_game_batch.argtypes = [POINTER(c_void_p), POINTER(c_int), POINTER(c_float), POINTER(c_bool), c_int]
+        self.lib.get_observation_batch.argtypes = [POINTER(c_void_p), POINTER(c_int), c_int]
+        self.lib.get_action_mask_batch.argtypes = [POINTER(c_void_p), POINTER(c_int), c_int]
+        self.lib.copy_game_state_batch.argtypes = [POINTER(c_void_p), POINTER(c_void_p), c_int]
+        
+        # C-MCTS Batched
+        self.lib.mcts_select_batch.argtypes = [POINTER(c_void_p), POINTER(c_void_p), POINTER(c_int), POINTER(c_int), c_int, c_float]
+        self.lib.mcts_backprop_batch.argtypes = [POINTER(c_void_p), POINTER(c_int), POINTER(c_float), c_int]
+
         self.lib.render_game_state.argtypes = [c_void_p]
         self.lib.close_render.argtypes = []
         self.lib.free_game.argtypes = [c_void_p]
