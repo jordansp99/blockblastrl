@@ -94,6 +94,7 @@ def main():
     parser.add_argument("--total-timesteps", type=int, default=1_000_000_000, help="Total timesteps (default: 1B for 'forever')")
     parser.add_argument("--no-tensorboard", action="store_true", help="Don't launch tensorboard")
     parser.add_argument("--mcts-sims", type=int, default=0, help="Number of MCTS simulations per step (0 to disable)")
+    parser.add_argument("--no-compile", action="store_true", help="Disable torch.compile")
     args = parser.parse_args()
 
     # PPO CONFIGURATION
@@ -167,8 +168,11 @@ def main():
             return
 
     try:
-        print("Compiling model for speed...")
-        agent = torch.compile(agent)
+        if not args.no_compile:
+            print("Compiling model for speed (this can take 2-5 minutes on the first run)...")
+            agent = torch.compile(agent)
+        else:
+            print("Torch compile disabled.")
     except Exception as e:
         print(f"Torch compile failed: {e}")
 
@@ -203,7 +207,9 @@ def main():
     mcts_engine = None
     if mcts_sims > 0:
         import mcts
-        mcts_engine = mcts.BatchedMCTSEngine(agent, device, envs.envs[0].lib, 1024, num_envs)
+        # Access the underlying env's lib through the PufferLib wrapper
+        c_lib = envs.envs[0].env.lib
+        mcts_engine = mcts.BatchedMCTSEngine(agent, device, c_lib, 1024, num_envs)
 
     start_time = time.time()
     num_updates = total_timesteps // batch_size
@@ -214,7 +220,10 @@ def main():
             lrnow = max(frac * learning_rate, 0.0)
             optimizer.param_groups[0]["lr"] = lrnow
 
+        print(f"Starting rollout for Update {update}...")
         for step in range(0, num_steps):
+            if step % 10 == 0:
+                print(f"  Step {step}/{num_steps}...")
             global_step += num_envs
             obs_buffer[step] = next_obs
             dones_buffer[step] = next_done
@@ -224,7 +233,8 @@ def main():
 
             if mcts_engine:
                 # Use MCTS to find best action and target distribution
-                state_ptrs = [e.state_ptr for e in envs.envs]
+                # Access underlying env state_ptr
+                state_ptrs = [e.env.state_ptr for e in envs.envs]
                 action, target_dist = mcts_engine.search(state_ptrs, num_simulations=mcts_sims)
                 action = torch.tensor(action).to(device)
                 mcts_targets_buffer[step] = torch.tensor(target_dist).to(device)

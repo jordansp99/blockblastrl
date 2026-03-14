@@ -272,6 +272,31 @@ void set_game_state(GameState* state, GameState* in) {
     memcpy(state, in, sizeof(GameState));
 }
 
+// BATCH FUNCTIONS FOR MCTS SPEED
+void step_game_batch(GameState** states, int* actions, float* rewards, bool* dones, int n) {
+    for (int i = 0; i < n; i++) {
+        step_game(states[i], actions[i], &rewards[i], &dones[i]);
+    }
+}
+
+void get_observation_batch(GameState** states, int* obs_out, int n) {
+    for (int i = 0; i < n; i++) {
+        get_observation(states[i], obs_out + (i * 139));
+    }
+}
+
+void get_action_mask_batch(GameState** states, int* mask_out, int n) {
+    for (int i = 0; i < n; i++) {
+        get_action_mask(states[i], mask_out + (i * 192));
+    }
+}
+
+void copy_game_state_batch(GameState** src, GameState** dest, int n) {
+    for (int i = 0; i < n; i++) {
+        memcpy(dest[i], src[i], sizeof(GameState));
+    }
+}
+
 bool window_initialized = false;
 void init_render() {
     if (!window_initialized) { InitWindow(500, 750, "BlockBlast Expert"); SetTargetFPS(60); window_initialized = true; }
