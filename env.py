@@ -39,6 +39,10 @@ class BlockBlastEnv(gymnasium.Env):
         self.lib.get_observation_batch.argtypes = [POINTER(c_void_p), POINTER(c_int), c_int]
         self.lib.get_action_mask_batch.argtypes = [POINTER(c_void_p), POINTER(c_int), c_int]
         self.lib.copy_game_state_batch.argtypes = [POINTER(c_void_p), POINTER(c_void_p), c_int]
+        
+        # C-MCTS Batched
+        self.lib.mcts_select_batch.argtypes = [POINTER(c_void_p), POINTER(c_void_p), POINTER(c_int), POINTER(c_int), c_int, c_float]
+        self.lib.mcts_backprop_batch.argtypes = [POINTER(c_void_p), POINTER(c_int), POINTER(c_float), c_int]
 
         self.lib.render_game_state.argtypes = [c_void_p]
         self.lib.close_render.argtypes = []
