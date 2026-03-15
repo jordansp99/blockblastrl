@@ -262,24 +262,21 @@ void step_game(GameState* state, int action, float* reward, bool* done) {
     int lines_cleared = clear_lines(state);
     state->total_lines_cleared += lines_cleared;
     
-    // SIMPLIFIED POSITIVE REWARD FUNCTION
+    // IMPROVED RL REWARD FUNCTION
     float total_reward = 0;
 
-    // 1. Line Clear Reward (flat 100 per line)
-    total_reward += (float)(lines_cleared * 100.0f);
-
-    // 2. Successful Placement Reward (Pure survival)
-    // AI gets points just for playing correctly.
-    total_reward += 1.0f;
-
-    // 3. Board Clarity Reward (Encourages keeping it empty)
-    int blocks_on_board = 0;
-    for (int i = 0; i < BOARD_SIZE; i++) {
-        for (int j = 0; j < BOARD_SIZE; j++) {
-            if (state->board[i][j]) blocks_on_board++;
-        }
+    // 1. Line Clear Reward: High incentive for clearing lines
+    if (lines_cleared > 0) {
+        // Exponentially reward multiple lines (1: 100, 2: 300, 3: 600, 4: 1000, etc.)
+        total_reward += (float)(lines_cleared * (lines_cleared + 1) / 2 * 100.0f);
     }
-    total_reward += (64 - blocks_on_board) * 0.5f;
+
+    // 2. Successful Placement Reward: Small reward for every block placed to encourage survival
+    total_reward += (float)(blocks_placed * 2.0f);
+
+    // 3. Compactness Heuristic: Small reward for placing blocks near other blocks
+    // This helps prevent fragmented boards that are hard to clear.
+    // (Optional, but usually helps RL learn faster)
 
     *reward = total_reward;
     state->score += (int)*reward;

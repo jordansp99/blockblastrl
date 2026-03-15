@@ -160,7 +160,7 @@ def main():
 
     # PPO CONFIGURATION
     num_envs = args.num_envs
-    num_steps = 128
+    num_steps = 256 # Increased for stability
     total_timesteps = args.total_timesteps
     learning_rate = args.lr
     anneal_lr = True
@@ -174,6 +174,7 @@ def main():
     vf_coef = 0.5
     max_grad_norm = 0.5 
     mcts_sims = args.mcts_sims
+    target_kl = 0.02 # KL Early Stopping threshold
     
     batch_size = int(num_envs * num_steps)
     minibatch_size = int(batch_size // num_minibatches)
@@ -347,13 +348,13 @@ def main():
         # ANNEALING
         frac = 1.0 - (update - 1.0) / num_updates
         if anneal_lr:
-            lrnow = max(frac * learning_rate, 0.0)
+            lrnow = max(frac * learning_rate, 5e-6) # Floor the LR
             optimizer.param_groups[0]["lr"] = lrnow
         
-        # Slower entropy decay
-        current_ent_coef = ent_coef * max(0.2, frac)
+        # Slower entropy decay (keep a higher floor for longer exploration)
+        current_ent_coef = ent_coef * max(0.4, frac)
 
-        print(f"Starting rollout for Update {update}...")
+        print(f"Starting rollout for Update {update} (LR: {optimizer.param_groups[0]['lr']:.2e}, Ent: {current_ent_coef:.3f})...")
         for step in range(0, num_steps):
             if step % 10 == 0:
                 print(f"  Step {step}/{num_steps}...")
@@ -450,6 +451,7 @@ def main():
         clipfracs = []
         for epoch in range(update_epochs):
             np.random.shuffle(b_inds)
+            epoch_kls = []
             for start in range(0, batch_size, minibatch_size):
                 end = start + minibatch_size
                 mb_inds = b_inds[start:end]
@@ -466,12 +468,13 @@ def main():
 
                     with torch.no_grad():
                         approx_kl = ((ratio - 1) - logratio).mean()
+                        epoch_kls.append(approx_kl.item())
                         clipfracs += [((ratio - 1.0).abs() > clip_coef).float().mean().item()]
-
+                    
                     mb_advantages = b_advantages[mb_inds]
                     if norm_adv:
                         mb_advantages = (mb_advantages - mb_advantages.mean()) / (mb_advantages.std() + 1e-8)
-                    
+
                     # Policy Loss (PPO)
                     pg_loss1 = -mb_advantages * ratio
                     pg_loss2 = -mb_advantages * torch.clamp(ratio, 1 - clip_coef, 1 + clip_coef)
@@ -504,6 +507,11 @@ def main():
                 nn.utils.clip_grad_norm_(agent.parameters(), max_grad_norm)
                 scaler.step(optimizer)
                 scaler.update()
+            
+            # KL Early Stopping
+            if target_kl is not None and np.mean(epoch_kls) > target_kl:
+                print(f"Early stopping at epoch {epoch} due to KL {np.mean(epoch_kls):.4f} > {target_kl}")
+                break
 
         y_pred, y_true = b_values.cpu().numpy(), b_returns.cpu().numpy()
         var_y = np.var(y_true)
