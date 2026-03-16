@@ -241,20 +241,18 @@ void step_game(GameState* state, int action, float* reward, bool* done) {
     int col = action % 8;
 
     if (!can_place(state, shape_idx, row, col)) {
-        *reward = -100.0f;
+        *reward = 0.0f;
         *done = true;
         state->game_over = true;
         return;
     }
 
     Shape s = shapes_pool[state->current_shapes[shape_idx]];
-    int blocks_placed = 0;
     for (int r = 0; r < s.height; r++) {
         for (int c = 0; c < s.width; c++) {
             if (s.blocks[r][c]) {
                 state->board[row + r][col + c] = 1;
                 state->board_colors[row + r][col + c] = state->current_shapes[shape_idx];
-                blocks_placed++;
             }
         }
     }
@@ -262,24 +260,10 @@ void step_game(GameState* state, int action, float* reward, bool* done) {
     int lines_cleared = clear_lines(state);
     state->total_lines_cleared += lines_cleared;
     
-    // IMPROVED RL REWARD FUNCTION
-    float total_reward = 0;
-
-    // 1. Line Clear Reward: High incentive for clearing lines
-    if (lines_cleared > 0) {
-        // Exponentially reward multiple lines (1: 100, 2: 300, 3: 600, 4: 1000, etc.)
-        total_reward += (float)(lines_cleared * (lines_cleared + 1) / 2 * 100.0f);
-    }
-
-    // 2. Successful Placement Reward: Small reward for every block placed to encourage survival
-    total_reward += (float)(blocks_placed * 2.0f);
-
-    // 3. Compactness Heuristic: Small reward for placing blocks near other blocks
-    // This helps prevent fragmented boards that are hard to clear.
-    // (Optional, but usually helps RL learn faster)
-
-    *reward = total_reward;
-    state->score += (int)*reward;
+    // SURVIVAL REWARD FUNCTION
+    // Reward 1.0 for every successful piece placement to encourage survival.
+    // The AI must discover line clearing as a means to stay alive.
+    float current_reward = 1.0f;
 
     bool all_used = true;
     for (int i=0; i<3; i++) if (state->shape_active[i]) all_used = false;
@@ -289,8 +273,11 @@ void step_game(GameState* state, int action, float* reward, bool* done) {
     state->game_over = *done;
     
     if (*done) {
-        *reward = 0; // No penalty, just stop earning points.
+        current_reward = 0.0f; // No reward if the game is over.
     }
+    
+    *reward = current_reward;
+    state->score += (int)*reward;
 }
 
 void free_game(GameState* state) { free(state); }

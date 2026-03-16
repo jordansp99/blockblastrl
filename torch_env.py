@@ -121,13 +121,6 @@ class TorchBlockBlastEnv:
         keep_mask = row_mask & col_mask
         self.boards = self.boards * keep_mask
         
-        rewards = torch.zeros(self.num_envs, dtype=torch.float32, device=self.device)
-        rewards += lines_cleared.float() * 100.0
-        rewards += 1.0
-        blocks_on_board = self.boards.sum(dim=(1, 2))
-        rewards += (64.0 - blocks_on_board.float()) * 0.5
-        rewards = torch.where(is_valid, rewards, 0.0)
-        
         all_used = ~self.shape_active.any(dim=1)
         self.generate_shapes(all_used)
         
@@ -135,6 +128,9 @@ class TorchBlockBlastEnv:
         has_moves = new_mask.any(dim=1)
         
         dones = ~has_moves | ~is_valid
+        
+        # Reward 1.0 for staying alive, 0.0 if the move ends the game or is invalid
+        rewards = torch.where(dones, 0.0, 1.0)
         
         reset_mask = dones.clone()
         if reset_mask.any():
