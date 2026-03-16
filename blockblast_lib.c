@@ -260,10 +260,10 @@ void step_game(GameState* state, int action, float* reward, bool* done) {
     int lines_cleared = clear_lines(state);
     state->total_lines_cleared += lines_cleared;
     
-    // SURVIVAL REWARD FUNCTION
-    // Reward 1.0 for every successful piece placement to encourage survival.
-    // The AI must discover line clearing as a means to stay alive.
-    float current_reward = 1.0f;
+    // SURVIVAL REWARD FUNCTION WITH DISCOVERY ASSIST
+    // Reward 10.0 for every successful piece placement to encourage survival.
+    // Bonus (5.0 per line) to help the AI discover line clearing.
+    float current_reward = 10.0f + (float)lines_cleared * 5.0f;
 
     bool all_used = true;
     for (int i=0; i<3; i++) if (state->shape_active[i]) all_used = false;

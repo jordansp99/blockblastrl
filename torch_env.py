@@ -129,8 +129,8 @@ class TorchBlockBlastEnv:
         
         dones = ~has_moves | ~is_valid
         
-        # Reward 1.0 for staying alive, 0.0 if the move ends the game or is invalid
-        rewards = torch.where(dones, 0.0, 1.0)
+        # Reward 10.0 for staying alive + 5.0 per line cleared, 0.0 if the move ends the game
+        rewards = torch.where(dones, 0.0, 10.0 + lines_cleared.float() * 5.0)
         
         reset_mask = dones.clone()
         if reset_mask.any():

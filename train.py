@@ -154,13 +154,13 @@ def main():
     parser.add_argument("--transformer-heads", type=int, default=4, help="Transformer attention heads")
     parser.add_argument("--activation", type=str, default="relu", choices=["relu", "gelu"], help="Activation function")
     parser.add_argument("--ent-coef", type=float, default=0.05, help="Starting entropy coefficient")
-    parser.add_argument("--gamma", type=float, default=0.99, help="Discount factor gamma")
+    parser.add_argument("--gamma", type=float, default=0.999, help="Discount factor gamma")
     parser.add_argument("--lr", type=float, default=1e-4, help="Learning rate")
     args = parser.parse_args()
 
     # PPO CONFIGURATION
     num_envs = args.num_envs
-    num_steps = 256 # Increased for stability
+    num_steps = 512 # Increased for stability and long-horizon rewards
     total_timesteps = args.total_timesteps
     learning_rate = args.lr
     anneal_lr = True
